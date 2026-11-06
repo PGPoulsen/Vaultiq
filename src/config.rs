@@ -104,6 +104,9 @@ pub struct Config {
     pub pinned: Vec<PathBuf>,
     pub open_with: OpenWith,
     pub window: WindowState,
+    /// Details-view column widths set by the user, by column key
+    /// (name, location, date, type, size).
+    pub column_widths: BTreeMap<String, i32>,
 }
 
 impl Default for Config {
@@ -116,12 +119,14 @@ impl Default for Config {
             pinned: Vec::new(),
             open_with: OpenWith::default(),
             window: WindowState::default(),
+            column_widths: BTreeMap::new(),
         }
     }
 }
 
 thread_local! {
     static CONFIG: RefCell<Config> = RefCell::new(Config::default());
+    static PENDING_SAVE: RefCell<Option<gtk::glib::SourceId>> = const { RefCell::new(None) };
 }
 
 fn path() -> PathBuf {
@@ -147,10 +152,28 @@ pub fn with<R>(f: impl FnOnce(&Config) -> R) -> R {
 
 /// Mutate the configuration and write it to disk.
 pub fn update(f: impl FnOnce(&mut Config)) {
-    let text = CONFIG.with(|c| {
-        f(&mut c.borrow_mut());
-        toml::to_string_pretty(&*c.borrow())
+    CONFIG.with(|c| f(&mut c.borrow_mut()));
+    save();
+}
+
+/// Like `update`, but coalesces rapid changes (e.g. while dragging a
+/// column edge) into one write shortly after the last one.
+pub fn update_deferred(f: impl FnOnce(&mut Config)) {
+    CONFIG.with(|c| f(&mut c.borrow_mut()));
+    PENDING_SAVE.with(|p| {
+        if let Some(id) = p.borrow_mut().take() {
+            id.remove();
+        }
+        let id = gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(500), || {
+            PENDING_SAVE.with(|p| p.borrow_mut().take());
+            save();
+        });
+        *p.borrow_mut() = Some(id);
     });
+}
+
+fn save() {
+    let text = CONFIG.with(|c| toml::to_string_pretty(&*c.borrow()));
     let path = path();
     match text {
         Ok(text) => {
@@ -205,6 +228,7 @@ mod tests {
             show_hidden: true,
             default_view: ViewMode::Icons,
             pinned: vec!["/tmp".into()],
+            column_widths: [("name".to_string(), 320), ("size".to_string(), 80)].into(),
             ..Default::default()
         };
         cfg.open_with.overrides.insert(

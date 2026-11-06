@@ -29,6 +29,11 @@
   font-size: 0.9em;
 }
 
+/* Column edges in the details header, so they're easy to find and drag */
+columnview.data-table > header > button:not(:last-child) {
+  box-shadow: inset -1px 0 alpha(currentColor, 0.15);
+}
+
 /* Denser rows in the details view */
 columnview.data-table > listview > row > cell {
   padding-top: 3px;

@@ -85,15 +85,41 @@ impl Tab {
         let column_view = gtk::ColumnView::builder().reorderable(false).show_column_separators(false).build();
         column_view.add_css_class("data-table");
         let mut sort_columns = Vec::new();
-        let mk = |title: &str, kind: CellKind, sorter: Option<gtk::Sorter>, width: i32| {
+        // `width` 0 means "fill the remaining space" until the user sizes it.
+        let mk = |key: &'static str, title: &str, kind: CellKind, sorter: Option<gtk::Sorter>, width: i32| {
             let col = gtk::ColumnViewColumn::new(Some(title), Some(views::factory(kind, weak.clone())));
             col.set_resizable(true);
             col.set_sorter(sorter.as_ref());
-            if width > 0 {
-                col.set_fixed_width(width);
-            } else {
-                col.set_expand(true);
+            let saved = config::with(|c| c.column_widths.get(key).copied());
+            match saved.or((width > 0).then_some(width)) {
+                Some(w) => col.set_fixed_width(w),
+                None => col.set_expand(true),
             }
+            // Dragging a header edge sets a fixed width. A filling column
+            // would grow straight back, so it stops filling once sized;
+            // double-clicking the edge (width -1) restores the default.
+            col.connect_fixed_width_notify(move |col| {
+                let w = col.fixed_width();
+                if width == 0 {
+                    col.set_expand(w < 0);
+                }
+                if w < 0 && width > 0 {
+                    // Back to the default width. The nested notify saves it as
+                    // a user width; forget it again afterwards.
+                    col.set_fixed_width(width);
+                    config::update_deferred(|c| {
+                        c.column_widths.remove(key);
+                    });
+                    return;
+                }
+                config::update_deferred(|c| {
+                    if w > 0 {
+                        c.column_widths.insert(key.to_string(), w);
+                    } else {
+                        c.column_widths.remove(key);
+                    }
+                });
+            });
             col
         };
         let info_cmp = |f: fn(&gio::FileInfo, &gio::FileInfo) -> std::cmp::Ordering| {
@@ -103,12 +129,14 @@ impl Tab {
             .upcast::<gtk::Sorter>()
         };
         let name_col = mk(
+            "name",
             "Name",
             CellKind::Name,
             Some(info_cmp(|a, b| util::natural_cmp(&a.display_name(), &b.display_name()))),
             0,
         );
         let date_col = mk(
+            "date",
             "Date modified",
             CellKind::Date,
             Some(info_cmp(|a, b| {
@@ -118,13 +146,14 @@ impl Tab {
             150,
         );
         let type_col = mk(
+            "type",
             "Type",
             CellKind::Type,
             Some(info_cmp(|a, b| util::content_type(a).cmp(&util::content_type(b)))),
             170,
         );
-        let size_col = mk("Size", CellKind::Size, Some(info_cmp(|a, b| a.size().cmp(&b.size()))), 90);
-        let location_column = mk("Folder", CellKind::Location, None, 220);
+        let size_col = mk("size", "Size", CellKind::Size, Some(info_cmp(|a, b| a.size().cmp(&b.size()))), 90);
+        let location_column = mk("location", "Folder", CellKind::Location, None, 220);
         location_column.set_visible(false);
         for col in [&name_col, &location_column, &date_col, &type_col, &size_col] {
             column_view.append_column(col);
