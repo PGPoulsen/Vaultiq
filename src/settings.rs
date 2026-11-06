@@ -1,6 +1,6 @@
 //! Preferences: display options, terminal and file associations.
 
-use crate::config::{self, Handler, ViewMode};
+use crate::config::{self, ColorScheme, Handler, ViewMode};
 use crate::openwith;
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -48,6 +48,20 @@ fn general_page(on_changed: Rc<dyn Fn()>) -> adw::PreferencesPage {
         config::update(|c| c.default_view = v);
     });
     display.add(&view);
+
+    let schemes = ColorScheme::ALL;
+    let appearance = adw::ComboRow::builder()
+        .title("Appearance")
+        .model(&gtk::StringList::new(&["Follow system", "Light", "Dark"]))
+        .selected(schemes.iter().position(|s| *s == config::with(|c| c.color_scheme)).unwrap_or(0) as u32)
+        .build();
+    let cb = on_changed.clone();
+    appearance.connect_selected_notify(move |r| {
+        let s = schemes[r.selected() as usize];
+        config::update(|c| c.color_scheme = s);
+        cb();
+    });
+    display.add(&appearance);
 
     let term_group = adw::PreferencesGroup::builder()
         .title("Terminal")

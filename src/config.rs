@@ -14,6 +14,32 @@ pub enum Handler {
     Command { command: String },
 }
 
+/// Light/dark appearance. `System` follows the desktop's preference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ColorScheme {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl ColorScheme {
+    pub const ALL: [ColorScheme; 3] = [ColorScheme::System, ColorScheme::Light, ColorScheme::Dark];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ColorScheme::System => "system",
+            ColorScheme::Light => "light",
+            ColorScheme::Dark => "dark",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.as_str() == s)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ViewMode {
@@ -98,6 +124,7 @@ impl Default for WindowState {
 pub struct Config {
     pub show_hidden: bool,
     pub default_view: ViewMode,
+    pub color_scheme: ColorScheme,
     pub show_preview: bool,
     /// Terminal used by "Open terminal here"; auto-detected when unset.
     pub terminal: Option<String>,
@@ -114,6 +141,7 @@ impl Default for Config {
         Self {
             show_hidden: false,
             default_view: ViewMode::Details,
+            color_scheme: ColorScheme::System,
             show_preview: true,
             terminal: None,
             pinned: Vec::new(),
@@ -227,6 +255,7 @@ mod tests {
         let mut cfg = Config {
             show_hidden: true,
             default_view: ViewMode::Icons,
+            color_scheme: ColorScheme::Dark,
             pinned: vec!["/tmp".into()],
             column_widths: [("name".to_string(), 320), ("size".to_string(), 80)].into(),
             ..Default::default()

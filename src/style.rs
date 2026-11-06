@@ -1,6 +1,7 @@
 //! Stylesheets: the built-in one, plus an optional user stylesheet at
 //! `~/.config/vaultiq/style.css` that overrides it and reloads on save.
 
+use crate::config::ColorScheme;
 use gtk::{gdk, gio, glib, prelude::*};
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -10,6 +11,16 @@ thread_local! {
     /// Keeps the user provider and its file monitor alive.
     static USER: RefCell<Option<(gtk::CssProvider, gio::FileMonitor)>> = const { RefCell::new(None) };
     static PENDING_RELOAD: RefCell<Option<glib::SourceId>> = const { RefCell::new(None) };
+}
+
+/// Apply the configured light/dark preference to every window.
+pub fn apply_color_scheme() {
+    let scheme = match crate::config::with(|c| c.color_scheme) {
+        ColorScheme::System => adw::ColorScheme::Default,
+        ColorScheme::Light => adw::ColorScheme::ForceLight,
+        ColorScheme::Dark => adw::ColorScheme::ForceDark,
+    };
+    adw::StyleManager::default().set_color_scheme(scheme);
 }
 
 pub fn user_css_path() -> PathBuf {

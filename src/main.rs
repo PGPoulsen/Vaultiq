@@ -30,6 +30,7 @@ fn main() -> glib::ExitCode {
     app.connect_startup(|app| {
         config::load();
         style::install(&gdk::Display::default().expect("no display"));
+        style::apply_color_scheme();
         window::set_accels(app);
     });
     app.connect_activate(|app| window::Explorer::open(app, Vec::new()));

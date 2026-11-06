@@ -47,6 +47,7 @@ can be edited by hand:
 ```toml
 show_hidden = false
 default_view = "details"      # details | list | icons
+color_scheme = "system"       # system | light | dark  (also in Settings and the ☰ menu)
 show_preview = true
 terminal = "kitty"            # used by "Open terminal here"; auto-detected if unset
 pinned = ["/home/me/Projects"]
@@ -112,6 +113,7 @@ the selector for any other widget.
 | Context menu | Shift+F10 or Menu |
 | Details / List / Icons | Ctrl+1 / Ctrl+2 / Ctrl+3 |
 | Hidden files / Preview pane / Refresh | Ctrl+H / Alt+P / F5 |
+| Switch light / dark | Alt+Shift+D |
 | Open terminal here | Ctrl+Alt+T |
 
 While dragging: hold Ctrl to copy, Shift to move (default: move on the same

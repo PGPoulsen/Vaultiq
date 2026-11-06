@@ -2,7 +2,7 @@
 //! status bar, and all user-facing actions.
 
 use crate::addressbar::AddressBar;
-use crate::config::{self, ViewMode};
+use crate::config::{self, ColorScheme, ViewMode};
 use crate::fileops::{self, OpsPanel, Transfer};
 use crate::openwith::{self, Notify};
 use crate::preview::Preview;
@@ -59,6 +59,7 @@ pub fn set_accels(app: &adw::Application) {
         ("win.up", &["<Alt>Up"]),
         ("win.show-hidden", &["<Control>h"]),
         ("win.toggle-preview", &["<Alt>p"]),
+        ("win.toggle-color-scheme", &["<Alt><Shift>d"]),
         ("win.view::details", &["<Control>1"]),
         ("win.view::list", &["<Control>2"]),
         ("win.view::icons", &["<Control>3"]),
@@ -150,6 +151,14 @@ impl Explorer {
         let section = gio::Menu::new();
         section.append(Some("Show Hidden Files"), Some("win.show-hidden"));
         section.append(Some("Show Preview Pane"), Some("win.toggle-preview"));
+        let appearance = gio::Menu::new();
+        appearance.append(Some("Follow System"), Some("win.color-scheme::system"));
+        appearance.append(Some("Light"), Some("win.color-scheme::light"));
+        appearance.append(Some("Dark"), Some("win.color-scheme::dark"));
+        let toggle = gio::Menu::new();
+        toggle.append(Some("Switch Light/Dark"), Some("win.toggle-color-scheme"));
+        appearance.append_section(None, &toggle);
+        section.append_submenu(Some("Appearance"), &appearance);
         menu.append_section(None, &section);
         let section = gio::Menu::new();
         section.append(Some("Settings"), Some("win.settings"));
@@ -548,8 +557,10 @@ impl Explorer {
     }
 
     fn apply_settings(self: &Rc<Self>) {
-        let (hidden, preview) = config::with(|c| (c.show_hidden, c.show_preview));
+        let (hidden, preview, scheme) = config::with(|c| (c.show_hidden, c.show_preview, c.color_scheme));
         self.action("show-hidden").set_state(&hidden.to_variant());
+        self.action("color-scheme").set_state(&scheme.as_str().to_variant());
+        crate::style::apply_color_scheme();
         self.action("toggle-preview").set_state(&preview.to_variant());
         self.preview.widget.set_visible(preview);
         for tab in self.tabs.borrow().iter() {
@@ -1085,6 +1096,19 @@ impl Explorer {
             Explorer::apply_settings_everywhere();
         });
         self.actions.add_action(&preview);
+        let scheme = gio::SimpleAction::new_stateful("color-scheme", Some(glib::VariantTy::STRING), &"system".to_variant());
+        scheme.connect_activate(|_, param| {
+            let Some(s) = param.and_then(|p| p.get::<String>()).and_then(|s| ColorScheme::from_str(&s)) else { return };
+            config::update(|c| c.color_scheme = s);
+            Explorer::apply_settings_everywhere();
+        });
+        self.actions.add_action(&scheme);
+        // Flip whatever is showing now (including when following the system).
+        add("toggle-color-scheme", |_| {
+            let next = if adw::StyleManager::default().is_dark() { ColorScheme::Light } else { ColorScheme::Dark };
+            config::update(|c| c.color_scheme = next);
+            Explorer::apply_settings_everywhere();
+        });
 
         add("settings", |ex| {
             settings::show(ex.window.upcast_ref(), Rc::new(Explorer::apply_settings_everywhere));
@@ -1145,6 +1169,7 @@ fn show_shortcuts(parent: &adw::ApplicationWindow) {
                 ("Details / List / Icons", "Ctrl+1 / Ctrl+2 / Ctrl+3"),
                 ("Show hidden files", "Ctrl+H"),
                 ("Preview pane", "Alt+P"),
+                ("Switch light / dark", "Alt+Shift+D"),
                 ("Open terminal here", "Ctrl+Alt+T"),
             ],
         ),
