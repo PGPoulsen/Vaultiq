@@ -70,6 +70,17 @@ pub fn set_accels(app: &adw::Application) {
     }
 }
 
+/// Refresh Quick access in every window after the pinned list changed.
+pub fn rebuild_sidebars() {
+    let windows = WINDOWS.with(|w| w.borrow().clone());
+    for ex in windows {
+        ex.sidebar.rebuild();
+        if let Some(tab) = ex.active_tab() {
+            ex.sidebar.select_location(&tab.location());
+        }
+    }
+}
+
 /// `$TERMINAL`, or the first common terminal emulator found in `$PATH`.
 pub fn detect_terminal() -> Option<String> {
     if let Ok(t) = std::env::var("TERMINAL")
@@ -812,10 +823,7 @@ impl Explorer {
                 }
             }
         });
-        let windows = WINDOWS.with(|w| w.borrow().clone());
-        for e in windows {
-            e.sidebar.rebuild();
-        }
+        rebuild_sidebars();
         self.update_chrome();
     }
 

@@ -83,7 +83,11 @@ impl Sidebar {
     }
 
     pub fn rebuild(self: &Rc<Self>) {
-        self.list.remove_all();
+        // Remove rows only: the list can also parent the context-menu popover,
+        // which `remove_all()` can't remove and would loop on forever.
+        while let Some(row) = self.list.row_at_index(0) {
+            self.list.remove(&row);
+        }
         self.entries.borrow_mut().clear();
 
         self.header("Quick access");
@@ -197,14 +201,13 @@ impl Sidebar {
             open(f.clone(), true);
         });
         if pinned {
-            let (p, w) = (popover.clone(), Rc::downgrade(self));
+            let p = popover.clone();
             button("Unpin from Quick access").connect_clicked(move |_| {
                 p.popdown();
                 let path = file.path();
                 config::update(|c| c.pinned.retain(|x| Some(x) != path.as_ref()));
-                if let Some(sb) = w.upgrade() {
-                    sb.rebuild();
-                }
+                // Rebuild once the menu has closed, in every window.
+                glib::idle_add_local_once(crate::window::rebuild_sidebars);
             });
         }
         popover.set_child(Some(&menu));
