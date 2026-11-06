@@ -1,0 +1,47 @@
+/* Breadcrumb bar styled like an entry */
+.vq-crumbs {
+  background-color: alpha(currentColor, 0.08);
+  border-radius: 6px;
+  min-height: 34px;
+  padding: 0 2px;
+}
+.vq-crumbs button {
+  padding: 2px 6px;
+  min-height: 26px;
+}
+
+.vq-sidebar {
+  background-color: var(--sidebar-bg-color);
+}
+.vq-sidebar-header {
+  font-weight: bold;
+  font-size: 0.85em;
+  opacity: 0.6;
+  margin: 8px 4px 2px 4px;
+}
+
+.vq-preview {
+  background-color: var(--view-bg-color);
+}
+
+.vq-statusbar {
+  padding: 2px 6px 2px 12px;
+  font-size: 0.9em;
+}
+
+/* Denser rows in the details view */
+columnview.data-table > listview > row > cell {
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+gridview > child {
+  padding: 8px;
+  border-radius: 8px;
+}
+
+/* Drop target highlight */
+.vq-cell:drop(active) {
+  background-color: alpha(var(--accent-bg-color), 0.25);
+  border-radius: 4px;
+}

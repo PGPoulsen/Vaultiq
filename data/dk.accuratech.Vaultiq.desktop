@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Vaultiq
+GenericName=File Explorer
+Comment=Browse and manage files with tabs and previews
+Exec=vaultiq %U
+Icon=system-file-manager
+Terminal=false
+StartupNotify=true
+DBusActivatable=false
+Categories=GTK;System;FileTools;FileManager;
+MimeType=inode/directory;
+Keywords=folder;explorer;files;manager;
