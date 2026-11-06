@@ -107,6 +107,7 @@ the selector for any other widget.
 | Back / Forward / Up | Alt+← / Alt+→ (Backspace, mouse buttons) / Alt+↑ |
 | Edit location / Search | Ctrl+L or Alt+D / Ctrl+F or F3 |
 | New tab / close tab / new window | Ctrl+T / Ctrl+W / Ctrl+N |
+| Move tab to a new window | Ctrl+Shift+T (or drag the tab out, or right-click it) |
 | Cut / Copy / Paste | Ctrl+X / Ctrl+C / Ctrl+V |
 | Rename / Trash / Delete permanently | F2 / Delete / Shift+Delete |
 | New folder / Copy path / Properties | Ctrl+Shift+N / Ctrl+Shift+C / Alt+Enter |

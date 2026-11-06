@@ -19,6 +19,11 @@ use std::rc::Rc;
 thread_local! {
     /// Open windows; each entry keeps its window's state alive.
     static WINDOWS: RefCell<Vec<Rc<Explorer>>> = const { RefCell::new(Vec::new()) };
+    /// Tabs detached from a window but not closed: being dragged or moved to
+    /// another window. Kept with the window they came from until re-attached.
+    static IN_TRANSIT: RefCell<Vec<(Rc<Tab>, std::rc::Weak<Explorer>)>> = const { RefCell::new(Vec::new()) };
+    /// Page widgets whose close was requested; their detach means "closed".
+    static CLOSING: RefCell<Vec<gtk::Widget>> = const { RefCell::new(Vec::new()) };
 }
 
 pub struct Explorer {
@@ -44,12 +49,15 @@ pub struct Explorer {
     /// Set once the paned has a real size; position changes after that are
     /// user drags (or resizes, which keep the end child's width anyway).
     preview_placed: Cell<bool>,
+    /// The tab whose context menu (right-click on the tab bar) is open.
+    menu_page: RefCell<Option<adw::TabPage>>,
 }
 
 pub fn set_accels(app: &adw::Application) {
     for (action, accels) in [
         ("win.new-tab", &["<Control>t"][..]),
         ("win.close-tab", &["<Control>w"]),
+        ("win.move-tab-to-new-window", &["<Control><Shift>t"]),
         ("win.new-window", &["<Control>n"]),
         ("win.focus-location", &["<Control>l", "<Alt>d"]),
         ("win.focus-search", &["<Control>f", "F3"]),
@@ -98,13 +106,33 @@ pub fn detect_terminal() -> Option<String> {
 
 impl Explorer {
     pub fn open(app: &adw::Application, locations: Vec<gio::File>) {
-        let ex = Explorer::build(app);
+        let ex = Explorer::create(app);
         let locations = if locations.is_empty() { vec![gio::File::for_path(glib::home_dir())] } else { locations };
         for loc in locations {
             ex.add_tab(loc, true);
         }
         ex.window.present();
-        WINDOWS.with(|w| w.borrow_mut().push(ex));
+    }
+
+    /// A registered window without tabs (tabs are moved or added after).
+    fn create(app: &adw::Application) -> Rc<Explorer> {
+        let ex = Explorer::build(app);
+        WINDOWS.with(|w| w.borrow_mut().push(ex.clone()));
+        ex
+    }
+
+    /// Move a tab into a brand-new window.
+    fn move_to_new_window(self: &Rc<Self>, page: &adw::TabPage) {
+        if self.tab_view.n_pages() < 2 {
+            return; // it already has a window of its own
+        }
+        let Some(app) = self.window.application().and_downcast::<adw::Application>() else { return };
+        let other = Explorer::create(&app);
+        self.tab_view.transfer_page(page, &other.tab_view, 0);
+        other.window.present();
+        if let Some(tab) = other.active_tab() {
+            tab.focus_view();
+        }
     }
 
     fn build(app: &adw::Application) -> Rc<Explorer> {
@@ -300,6 +328,7 @@ impl Explorer {
             actions,
             preview_width: Cell::new(ws.preview_width.max(220)),
             preview_placed: Cell::new(false),
+            menu_page: RefCell::new(None),
         });
         *me.borrow_mut() = Rc::downgrade(&ex);
         ex.setup_actions();
@@ -315,14 +344,79 @@ impl Explorer {
                 ex.update_chrome();
             }
         });
+        self.tab_view.connect_close_page(|_, page| {
+            CLOSING.with(|c| c.borrow_mut().push(page.child()));
+            glib::Propagation::Proceed // let the default handler close it
+        });
+        // A page leaves this view either because it's closing, or because
+        // it's being moved/dragged to another window (or dragged and later
+        // dropped back). Only closed tabs are dropped; moving ones are parked
+        // until page-attached picks them up, however long the drag takes.
         let w = Rc::downgrade(self);
         self.tab_view.connect_page_detached(move |view, page, _| {
             let Some(ex) = w.upgrade() else { return };
-            ex.tabs.borrow_mut().retain(|t| t.widget != page.child());
-            if view.n_pages() == 0 {
-                ex.window.close();
+            let child = page.child();
+            let closing = CLOSING.with(|c| {
+                let mut c = c.borrow_mut();
+                c.iter().position(|w| *w == child).map(|i| c.remove(i)).is_some()
+            });
+            let tab = {
+                let mut tabs = ex.tabs.borrow_mut();
+                tabs.iter().position(|t| t.widget == child).map(|i| tabs.remove(i))
+            };
+            if closing {
+                drop(tab);
+                if view.n_pages() == 0 {
+                    ex.window.close();
+                }
+            } else if let Some(tab) = tab {
+                IN_TRANSIT.with(|t| t.borrow_mut().push((tab, Rc::downgrade(&ex))));
             }
         });
+        let w = Rc::downgrade(self);
+        self.tab_view.connect_page_attached(move |_, page, _| {
+            let Some(ex) = w.upgrade() else { return };
+            let child = page.child();
+            let moved = IN_TRANSIT.with(|t| {
+                let mut t = t.borrow_mut();
+                t.iter().position(|(tab, _)| tab.widget == child).map(|i| t.remove(i))
+            });
+            // Tabs created by add_tab are registered before being appended.
+            let Some((tab, from)) = moved else { return };
+            tab.set_events(ex.tab_events());
+            ex.tabs.borrow_mut().push(tab.clone());
+            ex.update_tab_title(&tab);
+            if ex.is_active(&tab) {
+                ex.update_chrome();
+                tab.focus_view();
+            }
+            // The window it came from may now be empty.
+            if let Some(src) = from.upgrade()
+                && !Rc::ptr_eq(&src, &ex)
+                && src.tab_view.n_pages() == 0
+            {
+                src.window.close();
+            }
+        });
+        // Dropping a dragged tab outside any window opens it in a new one.
+        let w = Rc::downgrade(self);
+        self.tab_view.connect_create_window(move |_| {
+            let ex = w.upgrade()?;
+            let app = ex.window.application().and_downcast::<adw::Application>()?;
+            let other = Explorer::create(&app);
+            other.window.present();
+            Some(other.tab_view.clone())
+        });
+        let w = Rc::downgrade(self);
+        self.tab_view.connect_setup_menu(move |_, page| {
+            if let (Some(ex), Some(page)) = (w.upgrade(), page) {
+                *ex.menu_page.borrow_mut() = Some(page.clone());
+            }
+        });
+        let menu = gio::Menu::new();
+        menu.append(Some("Move to New Window"), Some("win.tab-menu-move"));
+        menu.append(Some("Close Tab"), Some("win.tab-menu-close"));
+        self.tab_view.set_menu_model(Some(&menu));
 
         let w = Rc::downgrade(self);
         self.search.connect_search_changed(move |entry| {
@@ -442,14 +536,17 @@ impl Explorer {
         self.tab_view.selected_page().is_some_and(|p| p.child() == tab.widget)
     }
 
-    pub fn add_tab(self: &Rc<Self>, location: gio::File, select: bool) {
+    fn tab_events(self: &Rc<Self>) -> crate::tab::EventFn {
         let w = Rc::downgrade(self);
-        let events: crate::tab::EventFn = Rc::new(move |tab, ev| {
+        Rc::new(move |tab, ev| {
             if let Some(ex) = w.upgrade() {
                 ex.on_tab_event(tab, ev);
             }
-        });
-        let tab = Tab::new(location, events);
+        })
+    }
+
+    pub fn add_tab(self: &Rc<Self>, location: gio::File, select: bool) {
+        let tab = Tab::new(location, self.tab_events());
         self.tabs.borrow_mut().push(tab.clone());
         let page = self.tab_view.append(&tab.widget);
         page.set_icon(Some(&gio::ThemedIcon::new("folder-symbolic")));
@@ -963,6 +1060,24 @@ impl Explorer {
                 ex.tab_view.close_page(&page);
             }
         });
+        add("move-tab-to-new-window", |ex| {
+            if let Some(page) = ex.tab_view.selected_page() {
+                ex.move_to_new_window(&page);
+            }
+        });
+        // Tab bar context menu: act on the tab that was right-clicked.
+        add("tab-menu-move", |ex| {
+            let page = ex.menu_page.borrow_mut().take();
+            if let Some(page) = page {
+                ex.move_to_new_window(&page);
+            }
+        });
+        add("tab-menu-close", |ex| {
+            let page = ex.menu_page.borrow_mut().take();
+            if let Some(page) = page {
+                ex.tab_view.close_page(&page);
+            }
+        });
         add("new-window", |ex| {
             let loc = ex.active_tab().map(|t| t.location());
             if let Some(app) = ex.window.application().and_downcast::<adw::Application>() {
@@ -1154,6 +1269,7 @@ fn show_shortcuts(parent: &adw::ApplicationWindow) {
             "Tabs & windows",
             &[
                 ("New tab / close tab", "Ctrl+T / Ctrl+W"),
+                ("Move tab to new window", "Ctrl+Shift+T (or drag it out)"),
                 ("Next / previous tab", "Ctrl+Tab / Ctrl+Shift+Tab"),
                 ("Open folder in new tab", "Middle click"),
                 ("New window", "Ctrl+N"),

@@ -60,7 +60,8 @@ pub struct Tab {
     sort_columns: Vec<(&'static str, gtk::ColumnViewColumn)>,
     location_column: gtk::ColumnViewColumn,
     state: RefCell<State>,
-    events: EventFn,
+    /// Re-pointed when the tab moves to another window.
+    events: RefCell<EventFn>,
 }
 
 impl Tab {
@@ -225,7 +226,7 @@ impl Tab {
                 pending_select: None,
                 kept_selection: HashSet::new(),
             }),
-            events,
+            events: RefCell::new(events),
         }
     }
 
@@ -234,7 +235,13 @@ impl Tab {
     }
 
     fn emit(&self, ev: TabEvent) {
-        (self.events)(self, ev)
+        let f = self.events.borrow().clone();
+        f(self, ev)
+    }
+
+    /// Route this tab's events to another window.
+    pub fn set_events(&self, events: EventFn) {
+        *self.events.borrow_mut() = events;
     }
 
     fn connect_signals(self: &Rc<Self>) {
