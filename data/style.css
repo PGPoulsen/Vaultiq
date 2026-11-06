@@ -74,6 +74,13 @@ columnview.data-table > header > button:not(:last-child) {
   box-shadow: inset -1px 0 alpha(currentColor, 0.15);
 }
 
+/* Inline rename field: compact, so the row keeps its height */
+entry.vq-rename {
+  min-height: 0;
+  padding: 0 6px;
+  margin: -2px 0;
+}
+
 /* Denser rows in the details view */
 columnview.data-table > listview > row > cell {
   padding-top: 3px;

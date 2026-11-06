@@ -1,6 +1,7 @@
 //! Cell factories for the three file views. Every cell widget carries the
 //! per-item interactions (context menu, middle click, drag and drop) so the
-//! tab can tell which item was targeted.
+//! tab can tell which item was targeted. Name cells also hold a hidden entry
+//! for inline renaming.
 
 use crate::tab::Tab;
 use crate::{thumbnails, util};
@@ -22,18 +23,65 @@ pub const CELL_CLASS: &str = "vq-cell";
 
 pub fn factory(kind: CellKind, tab: Weak<Tab>) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
+    let t = tab.clone();
     factory.connect_setup(move |_, obj| {
         let widget = build(kind);
         widget.add_css_class(CELL_CLASS);
         obj.set_property("child", &widget);
-        attach_interactions(&widget, obj, tab.clone());
+        attach_interactions(&widget, obj, t.clone());
+        if let Some(entry) = name_entry(&widget) {
+            attach_editor(&entry, t.clone());
+            if let Some(tab) = t.upgrade() {
+                tab.register_name_cell(kind, &widget, obj);
+            }
+        }
     });
     factory.connect_bind(move |_, obj| {
         let Some(info) = item_info(obj) else { return };
         let Some(widget) = obj.property::<Option<gtk::Widget>>("child") else { return };
+        // A recycled cell that was mid-rename now shows another file.
+        if let (Some(entry), Some(tab)) = (name_entry(&widget), tab.upgrade())
+            && WidgetExt::is_visible(&entry)
+        {
+            tab.cancel_rename_in(&entry);
+        }
         bind(kind, &widget, &info, obj);
     });
     factory
+}
+
+/// The rename entry of a Name/Row/Grid cell (its third child).
+pub fn name_entry(cell: &gtk::Widget) -> Option<gtk::Entry> {
+    cell.first_child()?.next_sibling()?.next_sibling().and_downcast()
+}
+
+/// Enter confirms, Escape cancels, clicking elsewhere confirms (as in Explorer).
+fn attach_editor(entry: &gtk::Entry, tab: Weak<Tab>) {
+    let t = tab.clone();
+    entry.connect_activate(move |_| {
+        if let Some(tab) = t.upgrade() {
+            tab.finish_rename(true, true);
+        }
+    });
+    let keys = gtk::EventControllerKey::new();
+    let t = tab.clone();
+    keys.connect_key_pressed(move |_, key, _, _| {
+        if key != gdk::Key::Escape {
+            return glib::Propagation::Proceed;
+        }
+        if let Some(tab) = t.upgrade() {
+            tab.finish_rename(false, true);
+        }
+        glib::Propagation::Stop
+    });
+    entry.add_controller(keys);
+    let focus = gtk::EventControllerFocus::new();
+    focus.connect_leave(move |_| {
+        if let Some(tab) = tab.upgrade() {
+            tab.finish_rename(true, false);
+        }
+    });
+    entry.add_controller(focus);
 }
 
 pub fn item_info(obj: &glib::Object) -> Option<gio::FileInfo> {
@@ -51,6 +99,7 @@ fn build(kind: CellKind) -> gtk::Widget {
                 .hexpand(true)
                 .build();
             b.append(&label);
+            b.append(&gtk::Entry::builder().hexpand(true).visible(false).css_classes(["vq-rename"]).build());
             b.upcast()
         }
         CellKind::Grid => {
@@ -70,6 +119,7 @@ fn build(kind: CellKind) -> gtk::Widget {
                 .max_width_chars(14)
                 .build();
             b.append(&label);
+            b.append(&gtk::Entry::builder().xalign(0.5).width_chars(12).visible(false).css_classes(["vq-rename"]).build());
             b.upcast()
         }
         CellKind::Size => gtk::Label::builder().xalign(1.0).build().upcast(),

@@ -22,6 +22,8 @@ pub enum TabEvent {
     /// Right click; coordinates are relative to `widget`.
     ContextMenu { widget: gtk::Widget, x: f64, y: f64 },
     Drop { files: Vec<gio::File>, dest: gio::File, copy: bool },
+    /// A short message for the user (e.g. a failed rename).
+    Notify(String),
 }
 
 /// Receives every event a tab emits.
@@ -40,6 +42,8 @@ struct State {
     search: Option<SearchState>,
     /// File name to select once it shows up in the listing.
     pending_select: Option<String>,
+    /// Start an inline rename once `pending_select` has been selected.
+    pending_rename: bool,
     /// Names of the selected files. GIO change events replace items in the
     /// model, which drops their selection; this restores it.
     kept_selection: HashSet<String>,
@@ -62,6 +66,21 @@ pub struct Tab {
     state: RefCell<State>,
     /// Re-pointed when the tab moves to another window.
     events: RefCell<EventFn>,
+    me: Weak<Tab>,
+    /// Name cells of all three views, with their list items, so the cell
+    /// showing a given file can be found for inline renaming.
+    name_cells: RefCell<Vec<NameCell>>,
+    renaming: RefCell<Option<Renaming>>,
+}
+
+/// A name cell's widget and the list item it currently displays.
+type NameCell = (CellKind, glib::WeakRef<gtk::Widget>, glib::WeakRef<glib::Object>);
+
+/// An inline rename in progress.
+struct Renaming {
+    entry: gtk::Entry,
+    label: gtk::Label,
+    info: gio::FileInfo,
 }
 
 impl Tab {
@@ -225,8 +244,12 @@ impl Tab {
                 search: None,
                 pending_select: None,
                 kept_selection: HashSet::new(),
+                pending_rename: false,
             }),
             events: RefCell::new(events),
+            me: weak,
+            name_cells: RefCell::default(),
+            renaming: RefCell::default(),
         }
     }
 
@@ -485,6 +508,136 @@ impl Tab {
             // elsewhere (e.g. a dialog that just closed). Items selected here
             // come from our own actions, so take focus with them.
             self.focus_view();
+            if std::mem::take(&mut self.state.borrow_mut().pending_rename)
+                && let Some(info) = self.info_at(pos)
+            {
+                self.begin_rename_when_ready(info, 0);
+            }
+        }
+    }
+
+    // ---- inline rename ----------------------------------------------------
+
+    pub(crate) fn register_name_cell(&self, kind: CellKind, cell: &gtk::Widget, item: &glib::Object) {
+        let mut cells = self.name_cells.borrow_mut();
+        cells.retain(|(_, w, _)| w.upgrade().is_some());
+        cells.push((kind, cell.downgrade(), item.downgrade()));
+    }
+
+    /// The visible name cell currently showing `info`, in the active view.
+    fn name_cell_for(&self, info: &gio::FileInfo) -> Option<gtk::Widget> {
+        let kind = match self.view() {
+            ViewMode::Details => CellKind::Name,
+            ViewMode::List => CellKind::Row,
+            ViewMode::Icons => CellKind::Grid,
+        };
+        self.name_cells.borrow().iter().find_map(|(k, cell, item)| {
+            let (cell, item) = (cell.upgrade()?, item.upgrade()?);
+            (*k == kind && views::item_info(&item).as_ref() == Some(info) && cell.is_mapped()).then_some(cell)
+        })
+    }
+
+    /// Rename the selected item in place (F2).
+    pub fn start_rename(&self) {
+        if self.is_searching() || self.renaming.borrow().is_some() {
+            return;
+        }
+        let sel = self.selected();
+        let [info] = sel.as_slice() else { return };
+        self.select_name(Some(info.name().to_string_lossy().into_owned()));
+        self.begin_rename_when_ready(info.clone(), 0);
+    }
+
+    /// Select `name` once it appears (e.g. a just-created folder) and then
+    /// rename it in place, like Explorer's "New folder".
+    pub fn select_and_rename(&self, name: String) {
+        self.state.borrow_mut().pending_rename = true;
+        self.select_name(Some(name));
+    }
+
+    /// The row only gets a widget once it has been scrolled into view and
+    /// laid out, so retry for a moment.
+    fn begin_rename_when_ready(&self, info: gio::FileInfo, attempt: u32) {
+        if self.begin_rename(&info) || attempt >= 20 {
+            return;
+        }
+        let me = self.me.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(25), move || {
+            if let Some(t) = me.upgrade() {
+                t.begin_rename_when_ready(info, attempt + 1);
+            }
+        });
+    }
+
+    fn begin_rename(&self, info: &gio::FileInfo) -> bool {
+        let Some(cell) = self.name_cell_for(info) else { return false };
+        let Some(entry) = views::name_entry(&cell) else { return false };
+        let label = entry.prev_sibling().and_downcast::<gtk::Label>().unwrap();
+        self.finish_rename(true, false); // only one rename at a time
+        let name = info.display_name().to_string();
+        entry.set_text(&name);
+        label.set_visible(false);
+        entry.set_visible(true);
+        *self.renaming.borrow_mut() = Some(Renaming { entry: entry.clone(), label, info: info.clone() });
+        entry.grab_focus();
+        // Select the name without its extension; GtkEntry selects all on
+        // focus, so do it afterwards.
+        let (stem, ext) = util::split_ext(&name);
+        let end = if util::is_dir(info) || ext.is_empty() { -1 } else { stem.chars().count() as i32 };
+        glib::idle_add_local_once(move || entry.select_region(0, end));
+        true
+    }
+
+    /// End the inline rename: `commit` renames the file, `refocus` puts
+    /// keyboard focus back on the list (not when the user clicked elsewhere).
+    pub(crate) fn finish_rename(&self, commit: bool, refocus: bool) {
+        let Some(r) = self.renaming.borrow_mut().take() else { return };
+        let new = r.entry.text().trim().to_string();
+        r.entry.set_visible(false);
+        r.label.set_visible(true);
+        if refocus {
+            self.focus_view();
+        }
+        let old = r.info.display_name().to_string();
+        if !commit || new.is_empty() || new == old {
+            return;
+        }
+        if new.contains('/') || new == "." || new == ".." {
+            self.emit(TabEvent::Notify(format!("“{new}” isn't a valid name")));
+            return;
+        }
+        let file = util::file_of(&r.info);
+        let me = self.me.clone();
+        glib::spawn_future_local(async move {
+            let res = file.set_display_name_future(&new, glib::Priority::DEFAULT).await;
+            let Some(t) = me.upgrade() else { return };
+            match res {
+                // Don't steal the selection from something newer (e.g. a
+                // folder created while this rename was being committed).
+                Ok(_) if t.renaming.borrow().is_none() && t.state.borrow().pending_select.is_none() => {
+                    t.select_name(Some(new))
+                }
+                Ok(_) => {}
+                Err(e) => t.emit(TabEvent::Notify(format!("Couldn't rename “{old}”: {}", e.message()))),
+            }
+        });
+    }
+
+    /// The entry of the inline rename in progress, if any.
+    pub fn rename_entry(&self) -> Option<gtk::Entry> {
+        self.renaming.borrow().as_ref().map(|r| r.entry.clone())
+    }
+
+    /// A cell that was showing the rename entry got reused for another file.
+    pub(crate) fn cancel_rename_in(&self, entry: &gtk::Entry) {
+        let ours = self.renaming.borrow().as_ref().is_some_and(|r| &r.entry == entry);
+        if ours {
+            self.finish_rename(false, false);
+        } else {
+            entry.set_visible(false);
+            if let Some(label) = entry.prev_sibling() {
+                label.set_visible(true);
+            }
         }
     }
 

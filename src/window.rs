@@ -448,11 +448,23 @@ impl Explorer {
             }
         });
 
-        // Mouse back/forward buttons.
+        // Mouse back/forward buttons. Any click outside an inline rename
+        // field confirms the rename, as in Explorer (clicks on empty space
+        // or buttons don't move keyboard focus, so the field wouldn't notice).
         let click = gtk::GestureClick::builder().button(0).propagation_phase(gtk::PropagationPhase::Capture).build();
         let w = Rc::downgrade(self);
-        click.connect_pressed(move |g, _, _, _| {
-            let Some(tab) = w.upgrade().and_then(|ex| ex.active_tab()) else { return };
+        click.connect_pressed(move |g, _, x, y| {
+            let Some(ex) = w.upgrade() else { return };
+            let Some(tab) = ex.active_tab() else { return };
+            if let Some(entry) = tab.rename_entry() {
+                let inside = ex
+                    .window
+                    .pick(x, y, gtk::PickFlags::DEFAULT)
+                    .is_some_and(|p| p == entry || p.is_ancestor(&entry));
+                if !inside {
+                    tab.finish_rename(true, false);
+                }
+            }
             match g.current_button() {
                 8 => tab.go_back(),
                 9 => tab.go_forward(),
@@ -603,6 +615,7 @@ impl Explorer {
             TabEvent::Drop { files, dest, copy } => {
                 self.transfer(if copy { Transfer::Copy } else { Transfer::Move }, files, dest)
             }
+            TabEvent::Notify(msg) => self.toast(&msg),
         }
     }
 
@@ -869,45 +882,29 @@ impl Explorer {
         });
     }
 
-    fn rename_selected(self: &Rc<Self>) {
-        let Some(tab) = self.active_tab() else { return };
-        let sel = tab.selected();
-        let [info] = sel.as_slice() else { return };
-        let info = info.clone();
-        let w = Rc::downgrade(self);
-        glib::spawn_future_local(async move {
-            let Some(ex) = w.upgrade() else { return };
-            let old = info.display_name().to_string();
-            let Some(new) = fileops::ask_name(ex.window.upcast_ref(), "Rename", &old, "Rename", !util::is_dir(&info)).await else { return };
-            if new == old {
-                return;
-            }
-            let file = util::file_of(&info);
-            match file.set_display_name_future(&new, glib::Priority::DEFAULT).await {
-                Ok(_) => tab.select_name(Some(new)),
-                Err(e) => ex.toast(&format!("Couldn't rename: {}", e.message())),
-            }
-        });
-    }
-
+    /// Create "New folder" / "New text document.txt" and rename it in place.
     fn create_new(self: &Rc<Self>, folder: bool) {
         let Some(tab) = self.active_tab() else { return };
         let Some(dir) = tab.location().path().filter(|_| !tab.is_searching()) else { return };
+        let name = util::unique_name(&dir, if folder { "New folder" } else { "New text document.txt" });
+        let file = gio::File::for_path(dir.join(&name));
         let w = Rc::downgrade(self);
         glib::spawn_future_local(async move {
-            let Some(ex) = w.upgrade() else { return };
-            let (heading, base) = if folder { ("New folder", "New folder") } else { ("New text document", "New text document.txt") };
-            let initial = util::unique_name(&dir, base);
-            let Some(name) = fileops::ask_name(ex.window.upcast_ref(), heading, &initial, "Create", !folder).await else { return };
-            let file = gio::File::for_path(dir.join(&name));
             let res = if folder {
                 file.make_directory_future(glib::Priority::DEFAULT).await
             } else {
-                file.create_future(gio::FileCreateFlags::NONE, glib::Priority::DEFAULT).await.map(|_| ())
+                match file.create_future(gio::FileCreateFlags::NONE, glib::Priority::DEFAULT).await {
+                    Ok(stream) => stream.close_future(glib::Priority::DEFAULT).await,
+                    Err(e) => Err(e),
+                }
             };
             match res {
-                Ok(()) => tab.select_name(Some(name)),
-                Err(e) => ex.toast(&format!("Couldn't create “{name}”: {}", e.message())),
+                Ok(()) => tab.select_and_rename(name),
+                Err(e) => {
+                    if let Some(ex) = w.upgrade() {
+                        ex.toast(&format!("Couldn't create “{name}”: {}", e.message()));
+                    }
+                }
             }
         });
     }
@@ -1153,7 +1150,7 @@ impl Explorer {
             clipboard::set_text(&ex.window, &text);
             ex.toast("Path copied");
         });
-        add("rename", |ex| ex.rename_selected());
+        with_tab("rename", |_, t| t.start_rename());
         add("trash", |ex| ex.trash_selected());
         add("delete", |ex| ex.delete_selected());
         add("new-folder", |ex| ex.create_new(true));
