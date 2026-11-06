@@ -8,6 +8,7 @@ mod properties;
 mod search;
 mod settings;
 mod sidebar;
+mod style;
 mod tab;
 mod thumbnails;
 mod tree;
@@ -28,13 +29,7 @@ fn main() -> glib::ExitCode {
 
     app.connect_startup(|app| {
         config::load();
-        let css = gtk::CssProvider::new();
-        css.load_from_string(include_str!("../data/style.css"));
-        gtk::style_context_add_provider_for_display(
-            &gdk::Display::default().expect("no display"),
-            &css,
-            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-        );
+        style::install(&gdk::Display::default().expect("no display"));
         window::set_accels(app);
     });
     app.connect_activate(|app| window::Explorer::open(app, Vec::new()));

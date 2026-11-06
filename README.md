@@ -59,6 +59,46 @@ pinned = ["/home/me/Projects"]
 "text/x-rust" = { app = "codium.desktop" }
 ```
 
+## Custom styling
+
+Put GTK CSS in `~/.config/vaultiq/style.css`. It's applied on top of the
+built-in styles and the libadwaita theme, and **reloads as soon as you save
+it**, so you can tweak things while Vaultiq is running. Mistakes are printed
+to the terminal with their location, e.g.
+`vaultiq: style.css:2:15-19: No property named "colr"`. Delete the file to
+go back to the defaults.
+
+Classes Vaultiq uses:
+
+| Selector | What it is |
+|---|---|
+| `.vq-sidebar` | Left pane (quick access, drives, folder tree) |
+| `.vq-sidebar-header` | "Quick access", "Drives", "Folders" headings |
+| `.vq-crumbs` | Breadcrumb address bar |
+| `.vq-preview` | Preview pane |
+| `.vq-statusbar` | Status bar at the bottom |
+| `.vq-cell` | Every file entry in the details/list/icon views |
+| `columnview.data-table` | Details view (`> header > button` are the column headers, `> listview > row > cell` the cells) |
+| `gridview > child` | Items in the icon view |
+
+Example:
+
+```css
+/* Bigger, roomier details view */
+columnview.data-table > listview > row > cell {
+  font-size: 1.1em;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+/* Darker sidebar and a custom accent colour (libadwaita variables) */
+.vq-sidebar { background-color: #1e1e2e; color: #cdd6f4; }
+:root { --accent-bg-color: #e66100; --accent-color: #e66100; }
+```
+
+Run Vaultiq with `GTK_DEBUG=interactive` to open the GTK Inspector and find
+the selector for any other widget.
+
 ## Keyboard shortcuts
 
 | Action | Keys |

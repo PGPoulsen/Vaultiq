@@ -29,6 +29,33 @@
   font-size: 0.9em;
 }
 
+/* Tabs: libadwaita draws unselected tabs with no background or border, so
+   neighbours blend together. Outline every tab, tint the bar behind them,
+   and lift the active tab (also when it's the only one). */
+tabbar .box {
+  background-color: color-mix(in srgb, currentColor 5%, var(--headerbar-bg-color));
+}
+tabbar tabbox > separator {
+  opacity: 0;
+}
+tabbar tab {
+  margin: 0 2px;
+  border: 1px solid color-mix(in srgb, currentColor 13%, transparent);
+  background-color: color-mix(in srgb, currentColor 4%, transparent);
+}
+tabbar tab:hover {
+  background-color: color-mix(in srgb, currentColor 9%, transparent);
+}
+tabbar tab:selected,
+tabbar tab:selected:hover,
+tabbar tabbox.single-tab tab {
+  background-color: var(--view-bg-color);
+  border-color: color-mix(in srgb, currentColor 22%, transparent);
+  /* Underline derived from the text colour: dark grey in light mode,
+     light grey in dark mode. */
+  box-shadow: inset 0 -2px color-mix(in srgb, currentColor 55%, transparent), 0 1px 2px rgb(0 0 0 / 8%);
+}
+
 /* Column edges in the details header, so they're easy to find and drag */
 columnview.data-table > header > button:not(:last-child) {
   box-shadow: inset -1px 0 alpha(currentColor, 0.15);
