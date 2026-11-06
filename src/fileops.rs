@@ -483,9 +483,14 @@ pub async fn ask_name(parent: &gtk::Widget, heading: &str, initial: &str, confir
     entry.connect_map(|e| {
         e.grab_focus();
     });
-    if dialog.choose_future(Some(parent)).await == "ok" {
-        Some(entry.text().trim().to_string())
-    } else {
-        None
-    }
+    // The response arrives while the dialog is still closing; when it has
+    // closed it restores keyboard focus to whatever had it before. Wait for
+    // that, so callers that select/focus the new item afterwards win.
+    let (closed_tx, closed_rx) = async_channel::bounded::<()>(1);
+    dialog.connect_closed(move |_| {
+        let _ = closed_tx.try_send(());
+    });
+    let ok = dialog.choose_future(Some(parent)).await == "ok";
+    let _ = closed_rx.recv().await;
+    ok.then(|| entry.text().trim().to_string())
 }

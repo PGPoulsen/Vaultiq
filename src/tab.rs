@@ -481,6 +481,10 @@ impl Tab {
                 ViewMode::List => self.list_view.scroll_to(pos, flags, None),
                 ViewMode::Icons => self.grid_view.scroll_to(pos, flags, None),
             }
+            // FOCUS only moves the list's cursor; keyboard focus may still be
+            // elsewhere (e.g. a dialog that just closed). Items selected here
+            // come from our own actions, so take focus with them.
+            self.focus_view();
         }
     }
 
