@@ -106,12 +106,25 @@ pub fn detect_terminal() -> Option<String> {
 
 impl Explorer {
     pub fn open(app: &adw::Application, locations: Vec<gio::File>) {
-        let ex = Explorer::create(app);
         let locations = if locations.is_empty() { vec![gio::File::for_path(glib::home_dir())] } else { locations };
-        for loc in locations {
+        Explorer::show(app, locations.into_iter().map(|l| (l, None)).collect(), None);
+    }
+
+    /// A new window with a tab per location, each selecting the named item.
+    /// `startup_id` is the activation token from whoever asked for it.
+    pub fn show(app: &adw::Application, tabs: Vec<(gio::File, Option<String>)>, startup_id: Option<&str>) -> Rc<Explorer> {
+        let ex = Explorer::create(app);
+        for (loc, select) in tabs {
             ex.add_tab(loc, true);
+            if let (Some(tab), Some(name)) = (ex.active_tab(), select) {
+                tab.select_name(Some(name));
+            }
+        }
+        if let Some(id) = startup_id.filter(|id| !id.is_empty()) {
+            ex.window.set_startup_id(id);
         }
         ex.window.present();
+        ex
     }
 
     /// A registered window without tabs (tabs are moved or added after).
@@ -701,7 +714,7 @@ impl Explorer {
 
     // ---- opening ----------------------------------------------------------
 
-    fn notifier(self: &Rc<Self>) -> Notify {
+    pub fn notifier(self: &Rc<Self>) -> Notify {
         let w = Rc::downgrade(self);
         Rc::new(move |msg: &str| {
             if let Some(ex) = w.upgrade() {

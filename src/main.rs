@@ -1,6 +1,7 @@
 mod addressbar;
 mod clipboard;
 mod config;
+mod filemanager1;
 mod fileops;
 mod openwith;
 mod preview;
@@ -25,6 +26,9 @@ fn main() -> glib::ExitCode {
     let app = adw::Application::builder()
         .application_id(APP_ID)
         .flags(gio::ApplicationFlags::HANDLES_OPEN)
+        // When D-Bus starts us for FileManager1 (`--gapplication-service`),
+        // stay up long enough for the call that triggered it to arrive.
+        .inactivity_timeout(10_000)
         .build();
 
     app.connect_startup(|app| {
@@ -32,6 +36,7 @@ fn main() -> glib::ExitCode {
         style::install(&gdk::Display::default().expect("no display"));
         style::apply_color_scheme();
         window::set_accels(app);
+        filemanager1::register(app);
     });
     app.connect_activate(|app| window::Explorer::open(app, Vec::new()));
     app.connect_open(|app, files, _| window::Explorer::open(app, files.to_vec()));

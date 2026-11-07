@@ -32,9 +32,20 @@ Install for your user and make it the default folder handler:
 ```sh
 cargo build --release
 install -Dm755 target/release/vaultiq ~/.local/bin/vaultiq
-install -Dm644 data/dk.accuratech.Vaultiq.desktop ~/.local/share/applications/dk.accuratech.Vaultiq.desktop
+# Absolute Exec paths: ~/.local/bin is often not on the session's PATH
+sed "s|^Exec=vaultiq|Exec=$HOME/.local/bin/vaultiq|" data/dk.accuratech.Vaultiq.desktop \
+  > ~/.local/share/applications/dk.accuratech.Vaultiq.desktop
+mkdir -p ~/.local/share/dbus-1/services
+sed "s|@BINDIR@|$HOME/.local/bin|" data/org.freedesktop.FileManager1.service \
+  > ~/.local/share/dbus-1/services/org.freedesktop.FileManager1.service
 xdg-mime default dk.accuratech.Vaultiq.desktop inode/directory
 ```
+
+The D-Bus service makes Vaultiq the `org.freedesktop.FileManager1`
+handler, which browsers use for "Show in folder" (it opens the folder with
+the file selected). If another file manager is already running as that
+service (e.g. `Thunar --gapplication-service`), quit it once so Vaultiq can
+take over. While Vaultiq is running it also claims the name itself.
 
 On Hyprland you can bind it, e.g. in `hyprland.lua` / your binds config, to
 run `vaultiq`.
@@ -130,6 +141,7 @@ drive, copy across drives).
 | `src/tree.rs`, `src/sidebar.rs`, `src/addressbar.rs` | Navigation widgets |
 | `src/preview.rs`, `src/thumbnails.rs` | Preview pane and icon thumbnails |
 | `src/openwith.rs` | App resolution, launching, chooser dialog |
+| `src/filemanager1.rs` | `org.freedesktop.FileManager1` D-Bus service ("Show in folder") |
 | `src/fileops.rs`, `src/clipboard.rs` | Copy/move worker, trash, rename, clipboard |
 | `src/properties.rs`, `src/settings.rs` | Dialogs |
 | `src/config.rs`, `src/util.rs`, `src/search.rs` | Config, helpers, search worker |
