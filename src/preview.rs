@@ -3,7 +3,7 @@
 //! results that arrive after the selection has moved on.
 
 use crate::thumbnails::texture_from_pixbuf;
-use crate::util;
+use crate::{archive, util};
 use gtk::gdk_pixbuf::Pixbuf;
 use gtk::{cairo, gdk, gio, glib, prelude::*};
 use std::cell::RefCell;
@@ -14,6 +14,8 @@ use std::rc::Rc;
 const TEXT_LIMIT: usize = 256 * 1024;
 const IMAGE_MAX: i32 = 2048;
 const PDF_MAX: (f64, f64) = (1200.0, 1600.0);
+/// Larger archive members aren't extracted just to preview them.
+const MAX_EXTRACT: i64 = 100 * 1024 * 1024;
 
 #[derive(Default)]
 struct State {
@@ -199,14 +201,35 @@ impl Preview {
                 .and_then(|t| t.names().first().map(|s| s.to_string()))
                 .unwrap_or_else(|| "text-x-generic".into())
         };
-        let Some(path) = util::file_of(info).path() else {
-            self.show_message(&icon_name(info), "No preview available.");
-            return;
-        };
         if util::is_dir(info) {
             self.show_message("folder", "");
             return;
         }
+        let Some(path) = util::file_of(info).path() else {
+            // Inside an archive: extract it, then preview the copy.
+            if let Some((archive, inner)) = archive::parts(&util::file_of(info))
+                && info.size() <= MAX_EXTRACT
+            {
+                self.show_message(&icon_name(info), "");
+                let (w, info) = (Rc::downgrade(self), info.clone());
+                glib::spawn_future_local(async move {
+                    let res = gio::spawn_blocking(move || archive::extract_member(&archive, &inner)).await;
+                    let Some(p) = w.upgrade().filter(|p| p.current(generation)) else { return };
+                    match res {
+                        Ok(Ok(local)) => {
+                            let info = info.dup();
+                            info.set_attribute_object("standard::file", &gio::File::for_path(local));
+                            p.show_one(&info, generation);
+                        }
+                        Ok(Err(e)) => p.show_message("dialog-warning-symbolic", &e),
+                        Err(_) => {}
+                    }
+                });
+                return;
+            }
+            self.show_message(&icon_name(info), "No preview available.");
+            return;
+        };
         let size = info.size();
         let is_text = gio::content_type_is_a(&ctype, "text/plain")
             || matches!(

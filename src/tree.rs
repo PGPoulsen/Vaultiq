@@ -136,7 +136,8 @@ impl FolderTree {
     pub fn reveal(self: &Rc<Self>, location: gio::File) {
         let generation = self.reveal_gen.get() + 1;
         self.reveal_gen.set(generation);
-        let Some(target) = location.path() else {
+        // Inside an archive, show the folder that holds it.
+        let Some(target) = location.path().or_else(|| crate::archive::host_dir(&location)) else {
             self.selection.unselect_all();
             return;
         };

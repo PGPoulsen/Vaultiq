@@ -1,6 +1,7 @@
 //! Breadcrumb address bar that turns into an editable path entry when
 //! clicked (or on Ctrl+L), with Tab completion.
 
+use crate::archive;
 use gtk::{gdk, gio, glib, prelude::*};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -111,7 +112,11 @@ impl AddressBar {
             .location
             .borrow()
             .as_ref()
-            .map(|f| f.path().map(|p| p.display().to_string()).unwrap_or_else(|| f.uri().to_string()))
+            .map(|f| match f.path() {
+                Some(p) => p.display().to_string(),
+                None if archive::is_member(f) => f.parse_name().to_string(),
+                None => f.uri().to_string(),
+            })
             .unwrap_or_default();
         self.entry.set_text(&text);
         self.widget.set_visible_child_name("entry");
@@ -129,7 +134,15 @@ impl AddressBar {
             self.crumbs.remove(&child);
         }
         let mut parts: Vec<(String, Option<&str>, gio::File)> = Vec::new();
-        if let Some(path) = file.path() {
+        // Inside an archive: crumbs for the real folder holding it, then the
+        // archive and the folders within.
+        let mut inner = Vec::new();
+        let mut local = file.clone();
+        while archive::is_member(&local) {
+            let Some(up) = local.parent() else { break };
+            inner.push(std::mem::replace(&mut local, up));
+        }
+        if let Some(path) = local.path() {
             let home = glib::home_dir();
             let (mut cur, rest, root_label, root_icon): (PathBuf, &Path, &str, &str) = if path.starts_with(&home) {
                 (home.clone(), path.strip_prefix(&home).unwrap(), "Home", "user-home-symbolic")
@@ -140,6 +153,10 @@ impl AddressBar {
             for comp in rest.components() {
                 cur.push(comp);
                 parts.push((comp.as_os_str().to_string_lossy().into_owned(), None, gio::File::for_path(&cur)));
+            }
+            for f in inner.into_iter().rev() {
+                let name = f.basename().map(|b| b.to_string_lossy().into_owned()).unwrap_or_default();
+                parts.push((name, None, f));
             }
         } else {
             parts.push((file.uri().to_string(), Some("folder-remote-symbolic"), file.clone()));

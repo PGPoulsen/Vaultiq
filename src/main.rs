@@ -1,4 +1,5 @@
 mod addressbar;
+mod archive;
 mod clipboard;
 mod config;
 mod filemanager1;
@@ -33,6 +34,8 @@ fn main() -> glib::ExitCode {
 
     app.connect_startup(|app| {
         config::load();
+        archive::register();
+        archive::clean_cache();
         style::install(&gdk::Display::default().expect("no display"));
         style::apply_color_scheme();
         window::set_accels(app);

@@ -9,7 +9,7 @@ use crate::preview::Preview;
 use crate::sidebar::{OpenFn, Sidebar};
 use crate::tab::{Tab, TabEvent};
 use crate::tree::FolderTree;
-use crate::{clipboard, properties, settings, util};
+use crate::{archive, clipboard, properties, settings, util};
 use adw::prelude::*;
 use gtk::{gdk, gio, glib, graphene};
 use std::cell::{Cell, RefCell};
@@ -107,7 +107,7 @@ pub fn detect_terminal() -> Option<String> {
 impl Explorer {
     pub fn open(app: &adw::Application, locations: Vec<gio::File>) {
         let locations = if locations.is_empty() { vec![gio::File::for_path(glib::home_dir())] } else { locations };
-        Explorer::show(app, locations.into_iter().map(|l| (l, None)).collect(), None);
+        Explorer::show(app, locations.into_iter().map(|l| (archive::browsable(l), None)).collect(), None);
     }
 
     /// A new window with a tab per location, each selecting the named item.
@@ -662,10 +662,14 @@ impl Explorer {
             self.preview.show(&sel);
         }
         let any = !sel.is_empty();
-        for name in ["open", "cut", "copy", "copy-path", "trash", "delete", "properties", "open-with-other"] {
+        for name in ["open", "copy", "copy-path", "properties", "open-with-other"] {
             self.action(name).set_enabled(any);
         }
-        self.action("rename").set_enabled(sel.len() == 1 && !tab.is_searching());
+        let writable = !archive::is_member(&tab.location());
+        for name in ["cut", "trash", "delete"] {
+            self.action(name).set_enabled(any && writable);
+        }
+        self.action("rename").set_enabled(sel.len() == 1 && !tab.is_searching() && writable);
         self.update_status();
     }
 
@@ -745,17 +749,22 @@ impl Explorer {
     }
 
     fn open_infos(self: &Rc<Self>, infos: Vec<gio::FileInfo>) {
-        let (dirs, files): (Vec<_>, Vec<_>) = infos.into_iter().partition(util::is_dir);
+        // Archives open like folders.
+        let (dirs, files): (Vec<_>, Vec<_>) = infos.into_iter().partition(|i| util::is_dir(i) || archive::is_archive_info(i));
         if !files.is_empty() {
             openwith::open_default(&files, self.window.upcast_ref(), self.notifier());
         }
-        match dirs.as_slice() {
-            [one] if files.is_empty() => self.navigate_active(util::file_of(one)),
-            _ => {
-                for d in dirs {
-                    self.add_tab(util::file_of(&d), false);
+        let in_place = dirs.len() == 1 && files.is_empty();
+        for d in dirs {
+            let w = Rc::downgrade(self);
+            archive::browse(util::file_of(&d), move |res| {
+                let Some(ex) = w.upgrade() else { return };
+                match res {
+                    Ok(loc) if in_place => ex.navigate_active(loc),
+                    Ok(loc) => ex.add_tab(loc, false),
+                    Err(e) => ex.toast(&e),
                 }
-            }
+            });
         }
     }
 
@@ -765,16 +774,18 @@ impl Explorer {
             tab.focus_view();
             return;
         }
-        let cwd = tab.location().path().unwrap_or_else(glib::home_dir);
-        let file = util::expand_path(text, &cwd);
+        let cwd = tab.location().path().or_else(|| archive::host_dir(&tab.location())).unwrap_or_else(glib::home_dir);
+        let file = archive::browsable(util::expand_path(text, &cwd));
         match file.query_file_type(gio::FileQueryInfoFlags::NONE, None::<&gio::Cancellable>) {
             gio::FileType::Directory => self.navigate_active(file),
-            gio::FileType::Unknown if file.path().is_some() => self.toast(&format!("Can't find “{}”", text.trim())),
+            gio::FileType::Unknown if file.path().is_some() || archive::is_member(&file) => {
+                self.toast(&format!("Can't find “{}”", text.trim()))
+            }
             gio::FileType::Unknown => self.navigate_active(file), // let GIO try the URI
             _ => {
-                if let Some(path) = file.path() {
-                    let info = util::info_from_path(&path, std::fs::metadata(&path).ok().as_ref());
-                    openwith::open_default(&[info], self.window.upcast_ref(), self.notifier());
+                if let Ok(info) = file.query_info(util::ATTRS, gio::FileQueryInfoFlags::NONE, None::<&gio::Cancellable>) {
+                    info.set_attribute_object("standard::file", &file);
+                    self.open_infos(vec![info]);
                 }
             }
         }
@@ -804,9 +815,31 @@ impl Explorer {
 
     fn transfer(self: &Rc<Self>, kind: Transfer, files: Vec<gio::File>, dest: gio::File) {
         let Some(dest_path) = dest.path() else {
-            self.toast("Only local folders are supported as destination");
+            self.toast(if archive::is_member(&dest) {
+                "Archives are read-only"
+            } else {
+                "Only local folders are supported as destination"
+            });
             return;
         };
+        // Items from an archive are extracted first, then copied from there.
+        let members: Vec<(PathBuf, String)> = files.iter().filter_map(archive::parts).collect();
+        if !members.is_empty() {
+            let w = Rc::downgrade(self);
+            glib::spawn_future_local(async move {
+                let res = gio::spawn_blocking(move || {
+                    members.iter().map(|(a, i)| archive::extract_member(a, i)).collect::<Result<Vec<_>, _>>()
+                })
+                .await;
+                let Some(ex) = w.upgrade() else { return };
+                match res {
+                    Ok(Ok(paths)) => ex.transfer(Transfer::Copy, paths.into_iter().map(gio::File::for_path).collect(), dest),
+                    Ok(Err(e)) => ex.toast(&e),
+                    Err(_) => ex.toast("Extraction failed"),
+                }
+            });
+            return;
+        }
         let sources: Vec<PathBuf> = files.iter().filter_map(|f| f.path()).collect();
         if sources.len() != files.len() {
             self.toast("Some items aren't local files and were skipped");
@@ -824,6 +857,31 @@ impl Explorer {
             {
                 tab.select_name(first.file_name().map(|n| n.to_string_lossy().into_owned()));
             }
+        });
+    }
+
+    /// Extract archives into `into`, then show the result.
+    fn extract(self: &Rc<Self>, archives: Vec<PathBuf>, into: PathBuf) {
+        if archives.is_empty() {
+            return;
+        }
+        let n = archives.len();
+        self.toast(&format!("Extracting {}…", if n == 1 { archives[0].file_name().unwrap_or_default().to_string_lossy().into_owned() } else { format!("{n} archives") }));
+        let w = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let dir = into.clone();
+            let results = gio::spawn_blocking(move || archives.iter().map(|a| archive::extract_here(a, &dir)).collect::<Vec<_>>())
+                .await
+                .unwrap_or_else(|_| vec![Err("Extraction failed".into())]);
+            let Some(ex) = w.upgrade() else { return };
+            let errors: Vec<String> = results.iter().filter_map(|r| r.as_ref().err().cloned()).collect();
+            ex.report_errors(&errors);
+            let Some(Ok(first)) = results.into_iter().find(Result::is_ok) else { return };
+            let Some(tab) = ex.active_tab() else { return };
+            if tab.location().path().as_ref() != Some(&into) {
+                tab.navigate(gio::File::for_path(&into));
+            }
+            tab.select_name(first.file_name().map(|n| n.to_string_lossy().into_owned()));
         });
     }
 
@@ -938,6 +996,7 @@ impl Explorer {
 
     fn context_menu(self: &Rc<Self>, tab: &Tab, widget: &gtk::Widget, x: f64, y: f64) {
         let sel = tab.selected();
+        let in_archive = archive::is_member(&tab.location());
         let menu = gio::Menu::new();
         let section = |items: &[(&str, &str)]| {
             let s = gio::Menu::new();
@@ -968,7 +1027,9 @@ impl Explorer {
             s.append_submenu(Some("Sort by"), &sort);
             s.append(Some("Refresh"), Some("win.refresh"));
             menu.append_section(None, &s);
-            if !tab.is_searching() {
+            if in_archive {
+                section(&[("Extract all", "win.extract-all")]);
+            } else if !tab.is_searching() {
                 section(&[("Paste", "win.paste")]);
                 section(&[("New folder", "win.new-folder"), ("New text document", "win.new-file")]);
                 section(&[("Open terminal here", "win.open-terminal"), ("Pin to Quick access", "win.pin-current")]);
@@ -999,12 +1060,20 @@ impl Explorer {
                 open.append(Some("Open file location"), Some("win.open-location"));
             }
 
-            section(&[("Cut", "win.cut"), ("Copy", "win.copy"), ("Copy path", "win.copy-path")]);
-            let edit = section(&[("Move to Trash", "win.trash"), ("Delete permanently", "win.delete")]);
-            if sel.len() == 1 && !tab.is_searching() {
-                edit.prepend(Some("Rename"), Some("win.rename"));
+            if !in_archive && sel.iter().all(archive::is_archive_info) {
+                open.append(Some("Extract here"), Some("win.extract-here"));
             }
-            if all_dirs {
+
+            if in_archive {
+                section(&[("Copy", "win.copy")]);
+            } else {
+                section(&[("Cut", "win.cut"), ("Copy", "win.copy"), ("Copy path", "win.copy-path")]);
+                let edit = section(&[("Move to Trash", "win.trash"), ("Delete permanently", "win.delete")]);
+                if sel.len() == 1 && !tab.is_searching() {
+                    edit.prepend(Some("Rename"), Some("win.rename"));
+                }
+            }
+            if all_dirs && !in_archive {
                 let s = section(&[("Pin to Quick access", "win.pin")]);
                 if sel.len() == 1 {
                     s.append(Some("Open terminal here"), Some("win.open-terminal-selected"));
@@ -1012,7 +1081,6 @@ impl Explorer {
             }
             section(&[("Properties", "win.properties")]);
         }
-        self.action("paste").set_enabled(clipboard::has_files(&self.window));
 
         let popover = gtk::PopoverMenu::builder()
             .menu_model(&menu)
@@ -1121,6 +1189,19 @@ impl Explorer {
                 }
             }
         });
+        with_tab("extract-here", |ex, t| {
+            let Some(into) = t.location().path() else { return };
+            let archives: Vec<PathBuf> = t.selected().iter().filter(|i| archive::is_archive_info(i)).filter_map(|i| util::file_of(i).path()).collect();
+            ex.extract(archives, into);
+        });
+        with_tab("extract-all", |ex, t| {
+            if let Some((path, _)) = archive::parts(&t.location())
+                && let Some(into) = path.parent()
+            {
+                let into = into.to_path_buf();
+                ex.extract(vec![path], into);
+            }
+        });
         with_tab("open-with-other", |ex, t| {
             openwith::choose(&ex.window, t.selected(), ex.notifier());
         });
@@ -1131,19 +1212,43 @@ impl Explorer {
             let Some(tab) = ex.active_tab() else { return };
             let Some(target) = param.and_then(|p| p.get::<String>()) else { return };
             match openwith::app_from_target(&target) {
-                Some(app) => {
-                    if let Err(e) = openwith::launch(&app, &tab.selected_files(), &ex.window) {
-                        ex.toast(&format!("Couldn't start {}: {}", app.display_name(), e.message()));
-                    }
-                }
+                Some(app) => openwith::launch(&app, &tab.selected_files(), &ex.window, ex.notifier()),
                 None => ex.toast("Application not found"),
             }
         });
         self.actions.add_action(&open_with);
 
         with_tab("cut", |ex, t| clipboard::set(&ex.window, &t.selected_files(), true));
-        with_tab("copy", |ex, t| clipboard::set(&ex.window, &t.selected_files(), false));
+        with_tab("copy", |ex, t| {
+            let files = t.selected_files();
+            let members: Vec<(PathBuf, String)> = files.iter().filter_map(archive::parts).collect();
+            if members.is_empty() {
+                clipboard::set(&ex.window, &files, false);
+                return;
+            }
+            // Other apps can't read inside archives: copy extracted files.
+            let w = Rc::downgrade(ex);
+            glib::spawn_future_local(async move {
+                let res = gio::spawn_blocking(move || {
+                    members.iter().map(|(a, i)| archive::extract_member(a, i)).collect::<Result<Vec<_>, _>>()
+                })
+                .await;
+                let Some(ex) = w.upgrade() else { return };
+                match res {
+                    Ok(Ok(paths)) => clipboard::set(&ex.window, &paths.into_iter().map(gio::File::for_path).collect::<Vec<_>>(), false),
+                    Ok(Err(e)) => ex.toast(&e),
+                    Err(_) => ex.toast("Extraction failed"),
+                }
+            });
+        });
         add("paste", |ex| ex.paste());
+        // Paste is available whenever files are on the clipboard.
+        let w = Rc::downgrade(self);
+        self.window.clipboard().connect_changed(move |_| {
+            if let Some(ex) = w.upgrade() {
+                ex.action("paste").set_enabled(clipboard::has_files(&ex.window));
+            }
+        });
         with_tab("context-menu", |ex, t| {
             // Keyboard-invoked: anchor the menu below the focused row.
             let focus = gtk::prelude::GtkWindowExt::focus(&ex.window);

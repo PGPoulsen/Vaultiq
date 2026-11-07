@@ -197,9 +197,13 @@ fn attach_interactions(widget: &gtk::Widget, obj: &glib::Object, tab: Weak<Tab>)
     let (t, it) = (tab.clone(), item.clone());
     drag.connect_prepare(move |_, _, _| {
         let (tab, obj) = (t.upgrade()?, it.upgrade()?);
-        let files = tab.drag_files(obj.property::<u32>("position"));
+        let mut files = tab.drag_files(obj.property::<u32>("position"));
         if files.is_empty() {
             return None;
+        }
+        // Other apps can't read inside archives: hand them extracted copies.
+        if files.iter().any(crate::archive::is_member) {
+            files = files.iter().map(crate::archive::local_path).collect::<Result<Vec<_>, _>>().ok()?.into_iter().map(gio::File::for_path).collect();
         }
         Some(gdk::ContentProvider::for_value(&gdk::FileList::from_array(&files).to_value()))
     });

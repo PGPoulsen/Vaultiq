@@ -6,7 +6,7 @@ use crate::util::{self, History};
 use crate::views::{self, CellKind};
 use crate::search;
 use gtk::{gdk, gio, glib, prelude::*};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
@@ -71,6 +71,11 @@ pub struct Tab {
     /// showing a given file can be found for inline renaming.
     name_cells: RefCell<Vec<NameCell>>,
     renaming: RefCell<Option<Renaming>>,
+    /// Our own watch on the folder, to catch a stalled `dir_list`.
+    watch: RefCell<Option<gio::FileMonitor>>,
+    /// Files that changed recently, checked against the listing.
+    suspects: RefCell<Vec<gio::File>>,
+    check_pending: Cell<bool>,
 }
 
 /// A name cell's widget and the list item it currently displays.
@@ -250,6 +255,9 @@ impl Tab {
             me: weak,
             name_cells: RefCell::default(),
             renaming: RefCell::default(),
+            watch: RefCell::default(),
+            suspects: RefCell::default(),
+            check_pending: Cell::new(false),
         }
     }
 
@@ -475,10 +483,69 @@ impl Tab {
         self.location_column.set_visible(false);
         self.filter_model.set_model(Some(&self.dir_list));
         self.dir_list.set_file(Some(&file));
+        self.watch(&file);
         if self.stack.visible_child_name().as_deref() == Some("error") {
             self.stack.set_visible_child_name(self.view().as_str());
         }
         self.emit(TabEvent::LocationChanged);
+    }
+
+    /// GtkDirectoryList handles monitor events strictly in order and waits
+    /// for each new file's info. If a file vanishes before its info arrives
+    /// (a temp file created and deleted right away), that event never
+    /// completes and the listing stops updating for good. So watch the folder
+    /// too, and reload when the listing disagrees with the disk.
+    fn watch(&self, dir: &gio::File) {
+        let monitor = dir
+            .is_native()
+            .then(|| dir.monitor_directory(gio::FileMonitorFlags::WATCH_MOVES, None::<&gio::Cancellable>).ok())
+            .flatten();
+        if let Some(m) = &monitor {
+            let w = self.me.clone();
+            m.connect_changed(move |_, file, other, event| {
+                use gio::FileMonitorEvent as E;
+                let Some(t) = w.upgrade() else { return };
+                match event {
+                    E::Created | E::MovedIn | E::Deleted | E::MovedOut => t.suspects.borrow_mut().push(file.clone()),
+                    E::Renamed => t.suspects.borrow_mut().extend([Some(file.clone()), other.cloned()].into_iter().flatten()),
+                    _ => return,
+                }
+                if !t.check_pending.replace(true) {
+                    let w = t.me.clone();
+                    glib::timeout_add_local_once(std::time::Duration::from_millis(800), move || {
+                        if let Some(t) = w.upgrade() {
+                            t.check_pending.set(false);
+                            t.verify_listing();
+                        }
+                    });
+                }
+            });
+        }
+        *self.watch.borrow_mut() = monitor;
+    }
+
+    fn verify_listing(&self) {
+        let files = std::mem::take(&mut *self.suspects.borrow_mut());
+        if self.is_searching() || self.dir_list.is_loading() {
+            return;
+        }
+        let location = self.location();
+        let listed: HashSet<String> = (0..self.dir_list.n_items())
+            .filter_map(|i| self.dir_list.item(i).and_downcast::<gio::FileInfo>())
+            .map(|i| i.name().to_string_lossy().into_owned())
+            .collect();
+        let stale = files.iter().any(|f| {
+            let Some(name) = f.basename() else { return false };
+            f.parent().is_some_and(|p| p.equal(&location))
+                && f.query_exists(None::<&gio::Cancellable>) != listed.contains(name.to_string_lossy().as_ref())
+        });
+        if stale {
+            // Reload, keeping the selection across the moment it's empty.
+            let kept = self.state.borrow().kept_selection.clone();
+            self.dir_list.set_file(None::<&gio::File>);
+            self.state.borrow_mut().kept_selection = kept;
+            self.dir_list.set_file(Some(&location));
+        }
     }
 
     /// Select (and scroll to) the item called `name` once it appears.

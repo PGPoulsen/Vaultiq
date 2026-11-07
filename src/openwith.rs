@@ -2,10 +2,11 @@
 //! take precedence over the XDG defaults in `mimeapps.list`.
 
 use crate::config::{self, Handler};
-use crate::util;
+use crate::{archive, util};
 use adw::prelude::*;
 use gtk::{gio, glib};
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 pub type Notify = Rc<dyn Fn(&str)>;
@@ -100,11 +101,41 @@ pub fn app_from_target(target: &str) -> Option<gio::AppInfo> {
     }
 }
 
-pub fn launch(app: &gio::AppInfo, files: &[gio::File], widget: &impl IsA<gtk::Widget>) -> Result<(), glib::Error> {
-    // GdkAppLaunchContext passes an xdg-activation token on Wayland so the
-    // compositor focuses the launched window.
-    let ctx = widget.as_ref().display().app_launch_context();
-    app.launch(files, Some(&ctx))
+pub fn launch(app: &gio::AppInfo, files: &[gio::File], widget: &impl IsA<gtk::Widget>, notify: Notify) {
+    let n = notify.clone();
+    let run = move |app: &gio::AppInfo, files: &[gio::File], widget: &gtk::Widget| {
+        // GdkAppLaunchContext passes an xdg-activation token on Wayland so the
+        // compositor focuses the launched window.
+        let ctx = widget.display().app_launch_context();
+        if let Err(e) = app.launch(files, Some(&ctx)) {
+            n(&format!("Couldn't start {}: {}", app.display_name(), e.message()));
+        }
+    };
+    let members: Vec<(PathBuf, String)> = files.iter().filter_map(archive::parts).collect();
+    if members.is_empty() {
+        run(app, files, widget.as_ref());
+        return;
+    }
+    // Apps need real files: extract archive members to the cache first.
+    let (app, widget) = (app.clone(), widget.as_ref().clone());
+    let mut files = files.to_vec();
+    glib::spawn_future_local(async move {
+        let res = gio::spawn_blocking(move || {
+            members.iter().map(|(a, i)| archive::extract_member(a, i)).collect::<Result<Vec<_>, _>>()
+        })
+        .await;
+        match res {
+            Ok(Ok(paths)) => {
+                let mut paths = paths.into_iter();
+                for f in files.iter_mut().filter(|f| archive::is_member(f)) {
+                    *f = gio::File::for_path(paths.next().unwrap());
+                }
+                run(&app, &files, &widget);
+            }
+            Ok(Err(e)) => notify(&e),
+            Err(_) => notify("Extraction failed"),
+        }
+    });
 }
 
 /// Open files with their default (or overridden) application, grouping files
@@ -123,9 +154,7 @@ pub fn open_default(infos: &[gio::FileInfo], widget: &gtk::Widget, notify: Notif
         }
     }
     for (app, files) in groups {
-        if let Err(e) = launch(&app, &files, widget) {
-            notify(&format!("Couldn't start {}: {}", app.display_name(), e.message()));
-        }
+        launch(&app, &files, widget, notify.clone());
     }
     if !unhandled.is_empty() {
         choose(widget, unhandled, notify);
@@ -289,9 +318,7 @@ pub fn choose(parent: &impl IsA<gtk::Widget>, infos: Vec<gio::FileInfo>, notify:
             }
         }
         let files: Vec<gio::File> = infos.iter().map(util::file_of).collect();
-        if let Err(e) = launch(&app, &files, &parent_widget) {
-            notify(&format!("Couldn't start {}: {}", app.display_name(), e.message()));
-        }
+        launch(&app, &files, &parent_widget, notify.clone());
         d.close();
     });
     dialog.present(Some(parent.as_ref()));

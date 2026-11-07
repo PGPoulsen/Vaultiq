@@ -9,6 +9,11 @@ A tabbed file explorer in the style of Windows Explorer, for Linux / Wayland
 - Details / List / Icons views (icons show thumbnails from the shared
   freedesktop thumbnail cache), sortable columns, folders first, natural sort
 - Preview pane: images, text (first 256 KB), PDF (with paging), info card
+- Archives (zip, 7z, rar, tar.gz/bz2/xz/zst, cpio, cab) open like read-only
+  folders: browse, preview, open files, copy or drag them out. "Extract
+  here" unpacks next to the archive (into one folder, like Nautilus).
+  Needs libarchive; extracted files are cached in `~/.cache/vaultiq/archives`
+  for a day
 - Open, **Open with ▸**, "Choose another app…" with *Always use* — either
   as the system default (`~/.config/mimeapps.list`) or as a Vaultiq-only
   override, plus custom commands (`kitty nvim %f`)
@@ -20,7 +25,7 @@ A tabbed file explorer in the style of Windows Explorer, for Linux / Wayland
 
 ## Build and run
 
-Requires GTK ≥ 4.20, libadwaita ≥ 1.8, poppler-glib and a Rust toolchain.
+Requires GTK ≥ 4.20, libadwaita ≥ 1.8, poppler-glib, libarchive and a Rust toolchain.
 
 ```sh
 cargo run --release              # opens your home folder
@@ -39,6 +44,8 @@ mkdir -p ~/.local/share/dbus-1/services
 sed "s|@BINDIR@|$HOME/.local/bin|" data/org.freedesktop.FileManager1.service \
   > ~/.local/share/dbus-1/services/org.freedesktop.FileManager1.service
 xdg-mime default dk.accuratech.Vaultiq.desktop inode/directory
+# Optional: open archives in Vaultiq too
+xdg-mime default dk.accuratech.Vaultiq.desktop $(grep -oP '(?<=MimeType=inode/directory;).*' data/dk.accuratech.Vaultiq.desktop | tr ';' ' ')
 ```
 
 The D-Bus service makes Vaultiq the `org.freedesktop.FileManager1`
@@ -141,6 +148,7 @@ drive, copy across drives).
 | `src/tree.rs`, `src/sidebar.rs`, `src/addressbar.rs` | Navigation widgets |
 | `src/preview.rs`, `src/thumbnails.rs` | Preview pane and icon thumbnails |
 | `src/openwith.rs` | App resolution, launching, chooser dialog |
+| `src/archive.rs` | Archive browsing: libarchive bindings, the `vq-archive` GFile, extraction |
 | `src/filemanager1.rs` | `org.freedesktop.FileManager1` D-Bus service ("Show in folder") |
 | `src/fileops.rs`, `src/clipboard.rs` | Copy/move worker, trash, rename, clipboard |
 | `src/properties.rs`, `src/settings.rs` | Dialogs |
