@@ -224,7 +224,9 @@ impl Explorer {
             .action_name("win.toggle-preview")
             .build();
 
-        let header = adw::HeaderBar::new();
+        // Path bar below the tabs; the window buttons sit on the tab row.
+        let header = adw::HeaderBar::builder().show_start_title_buttons(false).show_end_title_buttons(false).build();
+        header.add_css_class("vq-pathbar");
         header.pack_start(&back);
         header.pack_start(&forward);
         header.pack_start(&up);
@@ -244,6 +246,24 @@ impl Explorer {
             .css_classes(["flat"])
             .build();
         tab_bar.set_end_action_widget(Some(&new_tab));
+        tab_bar.set_hexpand(true);
+        tab_bar.set_expand_tabs(false);
+
+        // The tab row doubles as the title bar, like Windows Explorer: drag
+        // its empty space to move the window, window buttons at the ends.
+        let tab_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        tab_row.add_css_class("vq-tabrow");
+        for side in [gtk::PackType::Start, gtk::PackType::End] {
+            let controls = gtk::WindowControls::builder().side(side).valign(gtk::Align::Center).build();
+            controls.bind_property("empty", &controls, "visible").invert_boolean().sync_create().build();
+            if side == gtk::PackType::Start {
+                tab_row.append(&controls);
+                tab_row.append(&tab_bar);
+            } else {
+                tab_row.append(&controls);
+            }
+        }
+        let tab_row = gtk::WindowHandle::builder().child(&tab_row).build();
 
         // Left pane: quick access above the folder tree.
         let m = with_me.clone();
@@ -313,8 +333,8 @@ impl Explorer {
 
         let ops = OpsPanel::new();
         let toolbar = adw::ToolbarView::builder().top_bar_style(adw::ToolbarStyle::Raised).build();
+        toolbar.add_top_bar(&tab_row);
         toolbar.add_top_bar(&header);
-        toolbar.add_top_bar(&tab_bar);
         toolbar.set_content(Some(&toasts));
         toolbar.add_bottom_bar(&ops.widget);
         toolbar.add_bottom_bar(&statusbar);

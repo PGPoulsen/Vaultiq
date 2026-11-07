@@ -91,7 +91,7 @@ Classes Vaultiq uses:
 
 | Selector | What it is |
 |---|---|
-| `.vq-sidebar` | Left pane (quick access, drives, folder tree) |
+| `.vq-sidebar` | Left pane (quick access, drives, folder tree). Its background follows the file list; set `--vq-sidebar-bg` to change it |
 | `.vq-sidebar-header` | "Quick access", "Drives", "Folders" headings |
 | `.vq-crumbs` | Breadcrumb address bar |
 | `.vq-preview` | Preview pane |
@@ -110,9 +110,12 @@ columnview.data-table > listview > row > cell {
   padding-bottom: 6px;
 }
 
-/* Darker sidebar and a custom accent colour (libadwaita variables) */
-.vq-sidebar { background-color: #1e1e2e; color: #cdd6f4; }
-:root { --accent-bg-color: #e66100; --accent-color: #e66100; }
+/* Own colour for the left pane, and a custom accent (libadwaita variables) */
+:root {
+  --vq-sidebar-bg: #1e1e2e;            /* or var(--sidebar-bg-color) for the theme's sidebar colour */
+  --accent-bg-color: #e66100;
+  --accent-color: #e66100;
+}
 ```
 
 Run Vaultiq with `GTK_DEBUG=interactive` to open the GTK Inspector and find

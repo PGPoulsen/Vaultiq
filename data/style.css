@@ -10,8 +10,10 @@
   min-height: 26px;
 }
 
+/* Left pane: same background as the file list by default. Override with
+   `:root { --vq-sidebar-bg: … }` (or a `.vq-sidebar` rule) in style.css. */
 .vq-sidebar {
-  background-color: var(--sidebar-bg-color);
+  background-color: var(--vq-sidebar-bg, var(--view-bg-color));
 }
 .vq-sidebar-header {
   font-weight: bold;
@@ -29,16 +31,23 @@
   font-size: 0.9em;
 }
 
-/* Tabs styled as classic tabs: rounded top corners, sitting on a baseline
-   under the tab strip. The active tab takes the content's background and
-   covers the baseline, so it opens into the file list below; inactive tabs
-   stay flat behind the line with thin dividers between them. */
+/* Tabs styled as classic tabs on the title row, like Windows Explorer:
+   rounded top corners on a baseline above the path bar. The active tab takes
+   the path bar's background and covers the baseline, so it opens into the
+   bar below; inactive tabs stay flat with thin dividers between them. */
 toolbarview > .top-bar.raised {
   box-shadow: none; /* the shadow would cut under the active tab */
 }
-tabbar .box {
-  background-color: color-mix(in srgb, currentColor 6%, var(--headerbar-bg-color));
+.vq-tabrow {
+  background-color: color-mix(in srgb, currentColor 7%, var(--headerbar-bg-color));
   box-shadow: inset 0 -1px color-mix(in srgb, currentColor 18%, transparent);
+}
+.vq-tabrow windowcontrols {
+  margin: 0 6px;
+}
+tabbar .box {
+  background: none;
+  box-shadow: none;
 }
 tabbar tabbox {
   padding-top: 6px;
@@ -58,6 +67,7 @@ tabbar tab {
   border-bottom: none;
   background: none;
   box-shadow: none;
+  min-width: 180px;
 }
 tabbar tab:hover {
   background-color: color-mix(in srgb, currentColor 7%, transparent);
@@ -65,8 +75,12 @@ tabbar tab:hover {
 tabbar tab:selected,
 tabbar tab:selected:hover,
 tabbar tabbox.single-tab tab {
-  background-color: var(--view-bg-color);
+  background-color: var(--headerbar-bg-color);
   border-color: color-mix(in srgb, currentColor 18%, transparent);
+}
+/* Path bar under the tabs: a line separates it from the file list */
+headerbar.vq-pathbar {
+  box-shadow: inset 0 -1px color-mix(in srgb, currentColor 12%, transparent);
 }
 
 /* Column edges in the details header, so they're easy to find and drag */
