@@ -76,6 +76,15 @@ pub struct Tab {
     /// Files that changed recently, checked against the listing.
     suspects: RefCell<Vec<gio::File>>,
     check_pending: Cell<bool>,
+    typeahead: RefCell<TypeAhead>,
+}
+
+/// Type-to-select: the letters typed so far and where they last matched.
+#[derive(Default)]
+struct TypeAhead {
+    typed: String,
+    last_key: Option<std::time::Instant>,
+    pos: Option<u32>,
 }
 
 /// A name cell's widget and the list item it currently displays.
@@ -258,6 +267,7 @@ impl Tab {
             watch: RefCell::default(),
             suspects: RefCell::default(),
             check_pending: Cell::new(false),
+            typeahead: RefCell::default(),
         }
     }
 
@@ -331,6 +341,21 @@ impl Tab {
                 t.stack.set_visible_child_name(t.view().as_str());
             }
         });
+
+        // Typing a name jumps to it, like Explorer. Captured before the view,
+        // which would otherwise take a typed space as "toggle selection".
+        let keys = gtk::EventControllerKey::builder().propagation_phase(gtk::PropagationPhase::Capture).build();
+        let w = self.weak();
+        keys.connect_key_pressed(move |_, key, _, mods| {
+            let blocked = gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK | gdk::ModifierType::SUPER_MASK | gdk::ModifierType::META_MASK;
+            match (w.upgrade(), key.to_unicode()) {
+                (Some(t), Some(c)) if !mods.intersects(blocked) && !c.is_control() && t.renaming.borrow().is_none() && t.type_ahead(c) => {
+                    glib::Propagation::Stop
+                }
+                _ => glib::Propagation::Proceed,
+            }
+        });
+        self.stack.add_controller(keys);
 
         // Clicks on empty space: left clears the selection, right opens the
         // background menu. Item cells claim their own clicks first.
@@ -554,6 +579,56 @@ impl Tab {
         self.apply_pending_select();
     }
 
+    /// Add `c` to the typed prefix and select the next item whose name
+    /// starts with it (ignoring case). Repeating one letter cycles through
+    /// the items starting with it. Returns whether the key was used.
+    fn type_ahead(&self, c: char) -> bool {
+        let mut ta = self.typeahead.borrow_mut();
+        let now = std::time::Instant::now();
+        if ta.last_key.is_none_or(|t| now.duration_since(t) > std::time::Duration::from_millis(1000)) {
+            ta.typed.clear();
+        }
+        if c == ' ' && ta.typed.is_empty() {
+            return false;
+        }
+        ta.last_key = Some(now);
+        ta.typed.extend(c.to_lowercase());
+        let mut chars = ta.typed.chars();
+        let first = chars.next().unwrap();
+        let cycling = chars.all(|ch| ch == first);
+        let needle = if cycling { first.to_string() } else { ta.typed.clone() };
+
+        let n = self.selection.n_items();
+        let current = ta.pos.filter(|&p| p < n && self.selection.is_selected(p)).or_else(|| {
+            let sel = self.selection.selection();
+            (!sel.is_empty()).then(|| sel.minimum())
+        });
+        // A longer prefix may still match the current item; a new letter moves on.
+        let start = match current {
+            Some(p) if cycling => p + 1,
+            Some(p) => p,
+            None => 0,
+        };
+        let found = (0..n).map(|k| (start + k) % n).find(|&i| {
+            self.info_at(i).is_some_and(|info| info.display_name().to_lowercase().starts_with(&needle))
+        });
+        if let Some(pos) = found {
+            ta.pos = Some(pos);
+            drop(ta);
+            self.scroll_select(pos);
+        }
+        true
+    }
+
+    fn scroll_select(&self, pos: u32) {
+        let flags = gtk::ListScrollFlags::SELECT | gtk::ListScrollFlags::FOCUS;
+        match self.view() {
+            ViewMode::Details => self.column_view.scroll_to(pos, None, flags, None),
+            ViewMode::List => self.list_view.scroll_to(pos, flags, None),
+            ViewMode::Icons => self.grid_view.scroll_to(pos, flags, None),
+        }
+    }
+
     fn apply_pending_select(&self) {
         let Some(name) = self.state.borrow().pending_select.clone() else { return };
         let n = self.selection.n_items();
@@ -565,12 +640,7 @@ impl Tab {
         });
         if let Some(pos) = found {
             self.state.borrow_mut().pending_select = None;
-            let flags = gtk::ListScrollFlags::SELECT | gtk::ListScrollFlags::FOCUS;
-            match self.view() {
-                ViewMode::Details => self.column_view.scroll_to(pos, None, flags, None),
-                ViewMode::List => self.list_view.scroll_to(pos, flags, None),
-                ViewMode::Icons => self.grid_view.scroll_to(pos, flags, None),
-            }
+            self.scroll_select(pos);
             // FOCUS only moves the list's cursor; keyboard focus may still be
             // elsewhere (e.g. a dialog that just closed). Items selected here
             // come from our own actions, so take focus with them.
