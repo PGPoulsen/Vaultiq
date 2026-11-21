@@ -20,6 +20,9 @@ pub enum CellKind {
 }
 
 pub const CELL_CLASS: &str = "vq-cell";
+/// Parts of a cell that start a file drag. Elsewhere a drag draws a
+/// selection box, so sweeping across rows can't move files by accident.
+pub const GRAB_CLASS: &str = "vq-grab";
 
 pub fn factory(kind: CellKind, tab: Weak<Tab>) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
@@ -28,7 +31,7 @@ pub fn factory(kind: CellKind, tab: Weak<Tab>) -> gtk::SignalListItemFactory {
         let widget = build(kind);
         widget.add_css_class(CELL_CLASS);
         obj.set_property("child", &widget);
-        attach_interactions(&widget, obj, t.clone());
+        attach_interactions(kind, &widget, obj, t.clone());
         if let Some(entry) = name_entry(&widget) {
             attach_editor(&entry, t.clone());
             if let Some(tab) = t.upgrade() {
@@ -93,10 +96,10 @@ fn build(kind: CellKind) -> gtk::Widget {
         CellKind::Name | CellKind::Row => {
             let b = gtk::Box::new(gtk::Orientation::Horizontal, 6);
             b.append(&gtk::Image::builder().pixel_size(24).build());
+            // Only as wide as the name, so the space after it isn't a drag handle.
             let label = gtk::Label::builder()
                 .xalign(0.0)
                 .ellipsize(gtk::pango::EllipsizeMode::End)
-                .hexpand(true)
                 .build();
             b.append(&label);
             b.append(&gtk::Entry::builder().hexpand(true).visible(false).css_classes(["vq-rename"]).build());
@@ -168,7 +171,7 @@ fn set_label(widget: &gtk::Widget, text: &str) {
     widget.downcast_ref::<gtk::Label>().unwrap().set_text(text);
 }
 
-fn attach_interactions(widget: &gtk::Widget, obj: &glib::Object, tab: Weak<Tab>) {
+fn attach_interactions(kind: CellKind, widget: &gtk::Widget, obj: &glib::Object, tab: Weak<Tab>) {
     let item = obj.downgrade();
 
     let click = gtk::GestureClick::builder().button(0).build();
@@ -191,6 +194,26 @@ fn attach_interactions(widget: &gtk::Widget, obj: &glib::Object, tab: Weak<Tab>)
     });
     widget.add_controller(click);
 
+    let handles: Vec<gtk::Widget> = match kind {
+        CellKind::Name | CellKind::Row => {
+            let icon = widget.first_child().unwrap();
+            let label = icon.next_sibling().unwrap();
+            vec![icon, label]
+        }
+        CellKind::Grid => vec![widget.clone()],
+        _ => Vec::new(),
+    };
+    for handle in &handles {
+        handle.add_css_class(GRAB_CLASS);
+        attach_drag(handle, widget, &item, &tab);
+    }
+
+    // Dropping onto a folder item moves/copies into that folder; anything
+    // else falls through to the view's own drop target (the current folder).
+    attach_drop(widget, item, tab);
+}
+
+fn attach_drag(handle: &gtk::Widget, cell: &gtk::Widget, item: &glib::WeakRef<glib::Object>, tab: &Weak<Tab>) {
     let drag = gtk::DragSource::builder()
         .actions(gdk::DragAction::COPY | gdk::DragAction::MOVE)
         .build();
@@ -207,15 +230,16 @@ fn attach_interactions(widget: &gtk::Widget, obj: &glib::Object, tab: Weak<Tab>)
         }
         Some(gdk::ContentProvider::for_value(&gdk::FileList::from_array(&files).to_value()))
     });
-    drag.connect_drag_begin(|src, _| {
-        if let Some(w) = src.widget() {
+    let cell = cell.downgrade();
+    drag.connect_drag_begin(move |src, _| {
+        if let Some(w) = cell.upgrade() {
             src.set_icon(Some(&gtk::WidgetPaintable::new(Some(&w))), 0, 0);
         }
     });
-    widget.add_controller(drag);
+    handle.add_controller(drag);
+}
 
-    // Dropping onto a folder item moves/copies into that folder; anything
-    // else falls through to the view's own drop target (the current folder).
+fn attach_drop(widget: &gtk::Widget, item: glib::WeakRef<glib::Object>, tab: Weak<Tab>) {
     let drop = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY | gdk::DragAction::MOVE);
     let it = item.clone();
     drop.connect_accept(move |_, d| {

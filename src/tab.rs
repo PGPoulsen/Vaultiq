@@ -357,9 +357,26 @@ impl Tab {
         });
         self.stack.add_controller(keys);
 
+        // A drag from a file's name or icon moves it; from anywhere else it
+        // draws a selection box, which would otherwise take over the move.
+        // Captured: the views decide on the box as soon as the button goes down.
+        let overlay = self.widget.first_child().unwrap();
+        let grab = gtk::GestureClick::builder().button(0).propagation_phase(gtk::PropagationPhase::Capture).build();
+        let w = self.weak();
+        grab.connect_pressed(move |g, _, x, y| {
+            let Some(t) = w.upgrade() else { return };
+            let widget = g.widget().unwrap();
+            let on_grab = widget.pick(x, y, gtk::PickFlags::DEFAULT).is_some_and(|p| {
+                std::iter::successors(Some(p), |w| w.parent()).take_while(|w| w != &widget).any(|w| w.has_css_class(views::GRAB_CLASS))
+            });
+            for view in [t.column_view.upcast_ref::<gtk::Widget>(), t.list_view.upcast_ref(), t.grid_view.upcast_ref()] {
+                view.set_property("enable-rubberband", !on_grab);
+            }
+        });
+        overlay.add_controller(grab);
+
         // Clicks on empty space: left clears the selection, right opens the
         // background menu. Item cells claim their own clicks first.
-        let overlay = self.widget.first_child().unwrap();
         let click = gtk::GestureClick::builder().button(0).build();
         let w = self.weak();
         click.connect_pressed(move |g, _, x, y| {
@@ -372,11 +389,6 @@ impl Tab {
                         .take_while(|w| w != &widget)
                         .any(|w| w.has_css_class(views::CELL_CLASS) || w.has_css_class("vq-row"))
                 });
-            // Dragging from empty space draws a selection box; from an item it
-            // must stay a file drag, which the box would otherwise take over.
-            for view in [t.column_view.upcast_ref::<gtk::Widget>(), t.list_view.upcast_ref(), t.grid_view.upcast_ref()] {
-                view.set_property("enable-rubberband", !on_item);
-            }
             match g.current_button() {
                 gdk::BUTTON_PRIMARY if !on_item => {
                     // Only on true blank space (below rows), not headers/scrollbars.
