@@ -594,7 +594,7 @@ impl Explorer {
         let tab = Tab::new(location, self.tab_events());
         self.tabs.borrow_mut().push(tab.clone());
         let page = self.tab_view.append(&tab.widget);
-        page.set_icon(Some(&gio::ThemedIcon::new("folder-symbolic")));
+        page.set_icon(Some(&gio::ThemedIcon::new("folder")));
         self.update_tab_title(&tab);
         if select {
             self.tab_view.set_selected_page(&page);

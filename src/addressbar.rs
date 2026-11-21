@@ -236,7 +236,12 @@ impl AddressBar {
         for (full, is_dir) in &found {
             let name = &full[typed_dir.len()..];
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            row.append(&gtk::Image::from_icon_name(if *is_dir { "folder-symbolic" } else { "text-x-generic-symbolic" }));
+            let icon = if *is_dir {
+                gio::ThemedIcon::new("folder").upcast::<gio::Icon>()
+            } else {
+                gio::content_type_get_icon(&gio::content_type_guess(Some(name), None::<&[u8]>).0)
+            };
+            row.append(&gtk::Image::builder().gicon(&icon).pixel_size(22).build());
             row.append(&gtk::Label::builder().label(name).xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::Middle).build());
             self.list.append(&gtk::ListBoxRow::builder().child(&row).focusable(false).build());
         }
@@ -315,9 +320,9 @@ impl AddressBar {
         if let Some(path) = local.path() {
             let home = glib::home_dir();
             let (mut cur, rest, root_label, root_icon): (PathBuf, &Path, &str, &str) = if path.starts_with(&home) {
-                (home.clone(), path.strip_prefix(&home).unwrap(), "Home", "user-home-symbolic")
+                (home.clone(), path.strip_prefix(&home).unwrap(), "Home", "user-home")
             } else {
-                ("/".into(), path.strip_prefix("/").unwrap_or(&path), "", "drive-harddisk-symbolic")
+                ("/".into(), path.strip_prefix("/").unwrap_or(&path), "", "drive-harddisk")
             };
             parts.push((root_label.into(), Some(root_icon), gio::File::for_path(&cur)));
             for comp in rest.components() {
@@ -329,16 +334,16 @@ impl AddressBar {
                 parts.push((name, None, f));
             }
         } else {
-            parts.push((file.uri().to_string(), Some("folder-remote-symbolic"), file.clone()));
+            parts.push((file.uri().to_string(), Some("folder-remote"), file.clone()));
         }
 
         for (i, (label, icon, target)) in parts.into_iter().enumerate() {
             if i > 0 {
-                self.crumbs.append(&gtk::Image::builder().icon_name("go-next-symbolic").css_classes(["dim-label"]).pixel_size(12).build());
+                self.crumbs.append(&gtk::Image::builder().icon_name("go-next").css_classes(["dim-label"]).pixel_size(16).build());
             }
             let content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
             if let Some(icon) = icon {
-                content.append(&gtk::Image::from_icon_name(icon));
+                content.append(&gtk::Image::builder().icon_name(icon).pixel_size(22).build());
             }
             if !label.is_empty() {
                 content.append(&gtk::Label::new(Some(&label)));
@@ -349,7 +354,7 @@ impl AddressBar {
             self.crumbs.append(&button);
         }
         if let Some(q) = search {
-            self.crumbs.append(&gtk::Image::builder().icon_name("go-next-symbolic").css_classes(["dim-label"]).pixel_size(12).build());
+            self.crumbs.append(&gtk::Image::builder().icon_name("go-next").css_classes(["dim-label"]).pixel_size(16).build());
             self.crumbs.append(&gtk::Label::builder().label(format!("Search results for “{q}”")).margin_start(6).css_classes(["dim-label"]).build());
         }
         self.crumbs.append(&gtk::Box::builder().hexpand(true).build());
