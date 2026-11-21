@@ -372,6 +372,11 @@ impl Tab {
                         .take_while(|w| w != &widget)
                         .any(|w| w.has_css_class(views::CELL_CLASS) || w.has_css_class("vq-row"))
                 });
+            // Dragging from empty space draws a selection box; from an item it
+            // must stay a file drag, which the box would otherwise take over.
+            for view in [t.column_view.upcast_ref::<gtk::Widget>(), t.list_view.upcast_ref(), t.grid_view.upcast_ref()] {
+                view.set_property("enable-rubberband", !on_item);
+            }
             match g.current_button() {
                 gdk::BUTTON_PRIMARY if !on_item => {
                     // Only on true blank space (below rows), not headers/scrollbars.

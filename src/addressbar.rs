@@ -1,9 +1,9 @@
 //! Breadcrumb address bar that turns into an editable path entry when
-//! clicked (or on Ctrl+L), with Tab completion.
+//! clicked (or on Ctrl+L), with suggestions while typing and Tab completion.
 
 use crate::archive;
 use gtk::{gdk, gio, glib, prelude::*};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -13,7 +13,20 @@ pub struct AddressBar {
     entry: gtk::Entry,
     location: RefCell<Option<gio::File>>,
     on_navigate: Rc<dyn Fn(gio::File)>,
+    popover: gtk::Popover,
+    list: gtk::ListBox,
+    /// Full entry text of each suggestion row, and whether it's a folder.
+    suggestions: RefCell<Vec<Name>>,
+    /// The last folder read for suggestions, so typing doesn't re-read it.
+    listing: RefCell<Option<(PathBuf, Vec<Name>)>>,
+    /// Set while we change the text ourselves, so it isn't treated as typing.
+    quiet: Cell<bool>,
 }
+
+/// A file name (or path text) and whether it's a folder.
+type Name = (String, bool);
+
+const MAX_SUGGESTIONS: usize = 50;
 
 impl AddressBar {
     /// `on_navigate` is called for crumb clicks; `on_submit` with the text
@@ -48,12 +61,51 @@ impl AddressBar {
         widget.add_named(&frame, Some("crumbs"));
         widget.add_named(&entry, Some("entry"));
 
+        // Not focusable and not modal, so typing stays in the entry.
+        let list = gtk::ListBox::builder().css_classes(["navigation-sidebar"]).focusable(false).build();
+        let popover = gtk::Popover::builder()
+            .child(
+                &gtk::ScrolledWindow::builder()
+                    .child(&list)
+                    .hscrollbar_policy(gtk::PolicyType::Never)
+                    .propagate_natural_height(true)
+                    .max_content_height(320)
+                    .build(),
+            )
+            .autohide(false)
+            .has_arrow(false)
+            .can_focus(false)
+            .position(gtk::PositionType::Bottom)
+            .halign(gtk::Align::Start)
+            .build();
+        popover.set_parent(&entry);
+
         let bar = Rc::new(AddressBar {
             widget,
             crumbs,
             entry,
             location: RefCell::new(None),
             on_navigate,
+            popover,
+            list,
+            suggestions: RefCell::default(),
+            listing: RefCell::default(),
+            quiet: Cell::new(false),
+        });
+
+        let w = Rc::downgrade(&bar);
+        bar.entry.connect_changed(move |_| {
+            if let Some(bar) = w.upgrade()
+                && !bar.quiet.get()
+            {
+                bar.suggest();
+            }
+        });
+        let w = Rc::downgrade(&bar);
+        bar.list.connect_row_activated(move |_, row| {
+            if let Some(bar) = w.upgrade() {
+                bar.accept(row.index(), true);
+            }
         });
 
         // Clicking the empty part of the crumb bar switches to editing.
@@ -78,21 +130,27 @@ impl AddressBar {
             on_submit(text);
         });
 
-        let keys = gtk::EventControllerKey::new();
+        // Captured, so Up/Down reach the suggestions rather than the entry.
+        let keys = gtk::EventControllerKey::builder().propagation_phase(gtk::PropagationPhase::Capture).build();
         let w = Rc::downgrade(&bar);
         keys.connect_key_pressed(move |_, key, _, _| {
             let Some(bar) = w.upgrade() else { return glib::Propagation::Proceed };
+            let open = bar.popover.is_visible();
+            let selected = bar.list.selected_row().map(|r| r.index());
             match key {
-                gdk::Key::Escape => {
-                    bar.show_crumbs();
-                    glib::Propagation::Stop
-                }
-                gdk::Key::Tab => {
-                    bar.complete();
-                    glib::Propagation::Stop
-                }
-                _ => glib::Propagation::Proceed,
+                gdk::Key::Escape if open => bar.hide_suggestions(),
+                gdk::Key::Escape => bar.show_crumbs(),
+                gdk::Key::Down | gdk::Key::KP_Down if open => bar.move_selection(1),
+                gdk::Key::Up | gdk::Key::KP_Up if open => bar.move_selection(-1),
+                gdk::Key::Return | gdk::Key::KP_Enter if open && selected.is_some() => bar.accept(selected.unwrap(), true),
+                gdk::Key::Right | gdk::Key::KP_Right if open && selected.is_some() => bar.accept(selected.unwrap(), false),
+                gdk::Key::Tab => match selected {
+                    Some(i) if open => bar.accept(i, false),
+                    _ => bar.complete(),
+                },
+                _ => return glib::Propagation::Proceed,
             }
+            glib::Propagation::Stop
         });
         bar.entry.add_controller(keys);
 
@@ -118,14 +176,126 @@ impl AddressBar {
                 None => f.uri().to_string(),
             })
             .unwrap_or_default();
-        self.entry.set_text(&text);
+        self.set_text_quietly(&text);
         self.widget.set_visible_child_name("entry");
         self.entry.grab_focus();
         self.entry.select_region(0, -1);
     }
 
     fn show_crumbs(&self) {
+        self.hide_suggestions();
         self.widget.set_visible_child_name("crumbs");
+    }
+
+    fn set_text_quietly(&self, text: &str) {
+        self.quiet.set(true);
+        self.entry.set_text(text);
+        self.quiet.set(false);
+    }
+
+    /// Show the names in the typed folder that start with the last typed
+    /// component (ignoring case), folders first.
+    fn suggest(&self) {
+        let text = self.entry.text().to_string();
+        let split = text.rfind('/').map_or(0, |i| i + 1);
+        let (typed_dir, prefix) = text.split_at(split);
+        let dir = match typed_dir.strip_prefix('~') {
+            Some(rest) => PathBuf::from(format!("{}{rest}", glib::home_dir().display())),
+            None if typed_dir.starts_with('/') => PathBuf::from(typed_dir),
+            None if text.contains("://") => return self.hide_suggestions(),
+            None => match self.location.borrow().as_ref().and_then(|l| l.path()) {
+                Some(cwd) => cwd.join(typed_dir),
+                None => return self.hide_suggestions(),
+            },
+        };
+        if text.is_empty() || !dir.is_dir() {
+            return self.hide_suggestions();
+        }
+        if self.listing.borrow().as_ref().is_none_or(|(d, _)| d != &dir) {
+            let mut names: Vec<Name> = std::fs::read_dir(&dir)
+                .map(|it| it.flatten().map(|e| (e.file_name().to_string_lossy().into_owned(), e.path().is_dir())).collect())
+                .unwrap_or_default();
+            names.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| crate::util::natural_cmp(&a.0, &b.0)));
+            *self.listing.borrow_mut() = Some((dir, names));
+        }
+        let lower = prefix.to_lowercase();
+        let found: Vec<Name> = self
+            .listing
+            .borrow()
+            .iter()
+            .flat_map(|(_, names)| names)
+            .filter(|(n, _)| (prefix.starts_with('.') || !n.starts_with('.')) && n.to_lowercase().starts_with(&lower))
+            .filter(|(n, _)| n != prefix)
+            .take(MAX_SUGGESTIONS)
+            .map(|(n, is_dir)| (format!("{typed_dir}{n}"), *is_dir))
+            .collect();
+        if found.is_empty() {
+            return self.hide_suggestions();
+        }
+        self.list.remove_all();
+        for (full, is_dir) in &found {
+            let name = &full[typed_dir.len()..];
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            row.append(&gtk::Image::from_icon_name(if *is_dir { "folder-symbolic" } else { "text-x-generic-symbolic" }));
+            row.append(&gtk::Label::builder().label(name).xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::Middle).build());
+            self.list.append(&gtk::ListBoxRow::builder().child(&row).focusable(false).build());
+        }
+        *self.suggestions.borrow_mut() = found;
+        self.popover.set_size_request(self.entry.width(), -1);
+        if self.popover.is_visible() {
+            // Re-measure so the popup shrinks when fewer names match.
+            self.popover.present();
+        } else {
+            self.popover.popup();
+        }
+    }
+
+    fn hide_suggestions(&self) {
+        self.popover.popdown();
+        self.list.unselect_all();
+    }
+
+    fn move_selection(&self, by: i32) {
+        let n = self.suggestions.borrow().len() as i32;
+        let next = match self.list.selected_row() {
+            Some(r) => r.index() + by,
+            None if by > 0 => 0,
+            None => n - 1,
+        };
+        match self.list.row_at_index(next).filter(|_| (0..n).contains(&next)) {
+            Some(row) => {
+                self.list.select_row(Some(&row));
+                // Keep the highlighted row scrolled into view.
+                if let (Some(bounds), Some(adj)) = (
+                    row.compute_bounds(&self.list),
+                    self.popover.child().and_downcast::<gtk::ScrolledWindow>().map(|s| s.vadjustment()),
+                ) {
+                    let (top, bottom) = (bounds.y() as f64, (bounds.y() + bounds.height()) as f64);
+                    if top < adj.value() {
+                        adj.set_value(top);
+                    } else if bottom > adj.value() + adj.page_size() {
+                        adj.set_value(bottom - adj.page_size());
+                    }
+                }
+            }
+            None => self.list.unselect_all(),
+        }
+    }
+
+    /// Put suggestion `i` in the entry. `go` opens it; otherwise a folder
+    /// gets a trailing "/" and its contents are suggested next.
+    fn accept(&self, i: i32, go: bool) {
+        let Some((full, is_dir)) = self.suggestions.borrow().get(i as usize).cloned() else { return };
+        if go {
+            self.set_text_quietly(&full);
+            self.entry.emit_activate();
+            return;
+        }
+        let text = if is_dir { format!("{full}/") } else { full };
+        self.set_text_quietly(&text);
+        self.entry.grab_focus_without_selecting();
+        self.entry.set_position(-1);
+        self.suggest();
     }
 
     pub fn set_location(&self, file: &gio::File, search: Option<&str>) {
@@ -228,7 +398,8 @@ impl AddressBar {
         } else {
             completed
         };
-        self.entry.set_text(&shown);
+        self.set_text_quietly(&shown);
         self.entry.set_position(-1);
+        self.suggest();
     }
 }
