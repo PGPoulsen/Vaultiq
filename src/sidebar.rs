@@ -92,14 +92,14 @@ impl Sidebar {
 
         self.header("Quick access");
         let home = glib::home_dir();
-        self.item("Home", &gio::ThemedIcon::new("user-home-symbolic").upcast(), Target::File { file: gio::File::for_path(&home), pinned: false }, None);
+        self.item("Home", &gio::ThemedIcon::new("user-home").upcast(), Target::File { file: gio::File::for_path(&home), pinned: false }, None);
         for (dir, icon) in [
-            (glib::UserDirectory::Desktop, "user-desktop-symbolic"),
-            (glib::UserDirectory::Documents, "folder-documents-symbolic"),
-            (glib::UserDirectory::Downloads, "folder-download-symbolic"),
-            (glib::UserDirectory::Music, "folder-music-symbolic"),
-            (glib::UserDirectory::Pictures, "folder-pictures-symbolic"),
-            (glib::UserDirectory::Videos, "folder-videos-symbolic"),
+            (glib::UserDirectory::Desktop, "user-desktop"),
+            (glib::UserDirectory::Documents, "folder-documents"),
+            (glib::UserDirectory::Downloads, "folder-download"),
+            (glib::UserDirectory::Music, "folder-music"),
+            (glib::UserDirectory::Pictures, "folder-pictures"),
+            (glib::UserDirectory::Videos, "folder-videos"),
         ] {
             let Some(path) = glib::user_special_dir(dir).filter(|p| *p != home && p.is_dir()) else { continue };
             let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
@@ -107,11 +107,11 @@ impl Sidebar {
         }
         for path in config::with(|c| c.pinned.clone()) {
             let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
-            self.item(&name, &gio::ThemedIcon::new("folder-symbolic").upcast(), Target::File { file: gio::File::for_path(&path), pinned: true }, None);
+            self.item(&name, &gio::ThemedIcon::new("folder").upcast(), Target::File { file: gio::File::for_path(&path), pinned: true }, None);
         }
 
         self.header("Drives");
-        self.item("File System", &gio::ThemedIcon::new("drive-harddisk-symbolic").upcast(), Target::File { file: gio::File::for_path("/"), pinned: false }, None);
+        self.item("File System", &gio::ThemedIcon::new("drive-harddisk").upcast(), Target::File { file: gio::File::for_path("/"), pinned: false }, None);
         for mount in self.monitor.mounts() {
             if mount.is_shadowed() {
                 continue;
@@ -128,11 +128,11 @@ impl Sidebar {
                 b.connect_clicked(move |b| unmount(&m, b));
                 b
             });
-            self.item(&mount.name(), &mount.symbolic_icon(), Target::File { file: mount.root(), pinned: false }, action);
+            self.item(&mount.name(), &mount.icon(), Target::File { file: mount.root(), pinned: false }, action);
         }
         for volume in self.monitor.volumes() {
             if volume.get_mount().is_none() {
-                self.item(&volume.name(), &volume.symbolic_icon(), Target::Volume(volume.clone()), None);
+                self.item(&volume.name(), &volume.icon(), Target::Volume(volume.clone()), None);
             }
         }
     }
@@ -146,7 +146,7 @@ impl Sidebar {
 
     fn item(&self, name: &str, icon: &gio::Icon, target: Target, action: Option<gtk::Button>) {
         let b = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        b.append(&gtk::Image::from_gicon(icon));
+        b.append(&gtk::Image::builder().gicon(icon).pixel_size(24).build());
         b.append(&gtk::Label::builder().label(name).xalign(0.0).hexpand(true).ellipsize(gtk::pango::EllipsizeMode::End).build());
         if let Some(a) = action {
             b.append(&a);

@@ -92,7 +92,7 @@ fn build(kind: CellKind) -> gtk::Widget {
     match kind {
         CellKind::Name | CellKind::Row => {
             let b = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-            b.append(&gtk::Image::new());
+            b.append(&gtk::Image::builder().pixel_size(24).build());
             let label = gtk::Label::builder()
                 .xalign(0.0)
                 .ellipsize(gtk::pango::EllipsizeMode::End)
@@ -141,8 +141,8 @@ fn bind(kind: CellKind, widget: &gtk::Widget, info: &gio::FileInfo, obj: &glib::
             widget.set_opacity(if util::is_hidden(info) { 0.6 } else { 1.0 });
             if kind == CellKind::Grid {
                 thumbnails::apply(&image, info, obj);
-            } else if let Some(icon) = info.symbolic_icon().or_else(|| info.icon()) {
-                // Symbolic icons recolor with the theme (legible in dark mode).
+            } else if let Some(icon) = info.icon().or_else(|| info.symbolic_icon()) {
+                // Full-colour icons tell file types apart; the symbolic ones are all one colour.
                 image.set_from_gicon(&icon);
             }
             if kind == CellKind::Grid {

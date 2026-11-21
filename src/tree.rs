@@ -25,8 +25,8 @@ impl FolderTree {
     pub fn new(on_open: OpenFn) -> Rc<Self> {
         let roots = gio::ListStore::new::<gio::FileInfo>();
         for (path, name, icon) in [
-            (glib::home_dir(), "Home", "user-home-symbolic"),
-            ("/".into(), "File System", "drive-harddisk-symbolic"),
+            (glib::home_dir(), "Home", "user-home"),
+            ("/".into(), "File System", "drive-harddisk"),
         ] {
             let info = util::info_from_path(&path, None);
             info.set_display_name(name);
@@ -81,7 +81,7 @@ impl FolderTree {
         factory.connect_setup(move |_, obj| {
             let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
             let content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-            content.append(&gtk::Image::new());
+            content.append(&gtk::Image::builder().pixel_size(24).build());
             content.append(&gtk::Label::builder().xalign(0.0).hexpand(true).ellipsize(gtk::pango::EllipsizeMode::End).build());
             let expander = gtk::TreeExpander::builder().child(&content).indent_for_icon(true).build();
             item.set_child(Some(&expander));
@@ -113,7 +113,7 @@ impl FolderTree {
             label.set_text(&info.display_name());
             match row.depth() {
                 0 => image.set_from_gicon(&info.icon().unwrap()),
-                _ => image.set_icon_name(Some("folder-symbolic")),
+                _ => image.set_icon_name(Some("folder")),
             }
         });
 
