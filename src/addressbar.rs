@@ -2,6 +2,7 @@
 //! clicked (or on Ctrl+L), with suggestions while typing and Tab completion.
 
 use crate::archive;
+use crate::views::{self, DropFn};
 use gtk::{gdk, gio, glib, prelude::*};
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
@@ -13,6 +14,7 @@ pub struct AddressBar {
     entry: gtk::Entry,
     location: RefCell<Option<gio::File>>,
     on_navigate: Rc<dyn Fn(gio::File)>,
+    on_drop: DropFn,
     popover: gtk::Popover,
     list: gtk::ListBox,
     /// Full entry text of each suggestion row, and whether it's a folder.
@@ -30,8 +32,8 @@ const MAX_SUGGESTIONS: usize = 50;
 
 impl AddressBar {
     /// `on_navigate` is called for crumb clicks; `on_submit` with the text
-    /// typed into the entry.
-    pub fn new(on_navigate: Rc<dyn Fn(gio::File)>, on_submit: Rc<dyn Fn(String)>) -> Rc<Self> {
+    /// typed into the entry; `on_drop` for files dropped onto a crumb.
+    pub fn new(on_navigate: Rc<dyn Fn(gio::File)>, on_submit: Rc<dyn Fn(String)>, on_drop: DropFn) -> Rc<Self> {
         let crumbs = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         let scroller = gtk::ScrolledWindow::builder()
             .child(&crumbs)
@@ -86,6 +88,7 @@ impl AddressBar {
             entry,
             location: RefCell::new(None),
             on_navigate,
+            on_drop,
             popover,
             list,
             suggestions: RefCell::default(),
@@ -349,6 +352,7 @@ impl AddressBar {
                 content.append(&gtk::Label::new(Some(&label)));
             }
             let button = gtk::Button::builder().child(&content).css_classes(["flat"]).build();
+            views::folder_drop_target(&button, target.clone(), self.on_drop.clone());
             let nav = self.on_navigate.clone();
             button.connect_clicked(move |_| nav(target.clone()));
             self.crumbs.append(&button);

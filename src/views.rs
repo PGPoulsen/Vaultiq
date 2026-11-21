@@ -6,7 +6,7 @@
 use crate::tab::Tab;
 use crate::{thumbnails, util};
 use gtk::{gdk, gio, glib, prelude::*};
-use std::rc::Weak;
+use std::rc::{Rc, Weak};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CellKind {
@@ -23,6 +23,21 @@ pub const CELL_CLASS: &str = "vq-cell";
 /// Parts of a cell that start a file drag. Elsewhere a drag draws a
 /// selection box, so sweeping across rows can't move files by accident.
 pub const GRAB_CLASS: &str = "vq-grab";
+
+/// Moves or copies dropped files into a folder: (files, folder, modifiers held).
+pub type DropFn = Rc<dyn Fn(Vec<gio::File>, gio::File, gdk::ModifierType)>;
+
+/// Makes `widget` accept files dropped onto it, for folders shown outside
+/// the file view (quick access, breadcrumbs).
+pub fn folder_drop_target(widget: &impl IsA<gtk::Widget>, dest: gio::File, on_drop: DropFn) {
+    let drop = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY | gdk::DragAction::MOVE);
+    drop.connect_drop(move |target, value, _, _| {
+        let Ok(list) = value.get::<gdk::FileList>() else { return false };
+        on_drop(list.files(), dest.clone(), target.current_event_state());
+        true
+    });
+    widget.add_controller(drop);
+}
 
 pub fn factory(kind: CellKind, tab: Weak<Tab>) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();

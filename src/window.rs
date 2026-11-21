@@ -9,7 +9,7 @@ use crate::preview::Preview;
 use crate::sidebar::{OpenFn, Sidebar};
 use crate::tab::{Tab, TabEvent};
 use crate::tree::FolderTree;
-use crate::{archive, clipboard, properties, settings, util};
+use crate::{archive, clipboard, properties, settings, util, views};
 use adw::prelude::*;
 use gtk::{gdk, gio, glib, graphene};
 use std::cell::{Cell, RefCell};
@@ -187,7 +187,13 @@ impl Explorer {
                 ex.address_submitted(&text);
             }
         });
-        let address = AddressBar::new(navigate, submit);
+        let m = with_me.clone();
+        let drop_fn: views::DropFn = Rc::new(move |files, dest, state| {
+            if let Some(tab) = m().and_then(|ex| ex.active_tab()) {
+                tab.drop_files(files, dest, state);
+            }
+        });
+        let address = AddressBar::new(navigate, submit, drop_fn.clone());
 
         let search = gtk::SearchEntry::builder()
             .placeholder_text("Search")
@@ -276,7 +282,7 @@ impl Explorer {
                 }
             }
         });
-        let sidebar = Sidebar::new(open_fn.clone());
+        let sidebar = Sidebar::new(open_fn.clone(), drop_fn);
         let tree = FolderTree::new(open_fn);
         let left_pane = gtk::Box::new(gtk::Orientation::Vertical, 0);
         left_pane.append(&sidebar.widget);

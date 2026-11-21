@@ -1,6 +1,7 @@
 //! Quick access (home, XDG user folders, pinned folders) and drives.
 
 use crate::config;
+use crate::views::{self, DropFn};
 use gtk::{gdk, gio, glib, prelude::*};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -20,10 +21,11 @@ pub struct Sidebar {
     entries: RefCell<Vec<Target>>,
     monitor: gio::VolumeMonitor,
     on_open: OpenFn,
+    on_drop: DropFn,
 }
 
 impl Sidebar {
-    pub fn new(on_open: OpenFn) -> Rc<Self> {
+    pub fn new(on_open: OpenFn, on_drop: DropFn) -> Rc<Self> {
         let list = gtk::ListBox::builder().css_classes(["navigation-sidebar"]).build();
         let widget = gtk::ScrolledWindow::builder()
             .child(&list)
@@ -37,6 +39,7 @@ impl Sidebar {
             entries: RefCell::default(),
             monitor: gio::VolumeMonitor::get(),
             on_open,
+            on_drop,
         });
 
         let w = Rc::downgrade(&sb);
@@ -151,10 +154,12 @@ impl Sidebar {
         if let Some(a) = action {
             b.append(&a);
         }
+        let row = gtk::ListBoxRow::builder().child(&b).build();
         if let Target::File { file, .. } = &target {
             b.set_tooltip_text(file.path().map(|p| p.display().to_string()).as_deref());
+            views::folder_drop_target(&row, file.clone(), self.on_drop.clone());
         }
-        self.list.append(&gtk::ListBoxRow::builder().child(&b).build());
+        self.list.append(&row);
         self.entries.borrow_mut().push(target);
     }
 
